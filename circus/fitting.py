@@ -100,8 +100,7 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
             neighbors[i] = numpy.where(numpy.sum(tmp, 1) != 0)[0]
 
     if use_gpu:
-        templates = templates.tocoo()
-        templates = af.sparse.create_sparse_from_host(templates.data, templates.row, templates.col, templates.shape[0], templates.shape[1])
+        templates = af.create_sparse_from_host(templates.data, templates.indptr, templates.indices, templates.shape[0], templates.shape[1])
 
     info_string   = ''
 
@@ -157,7 +156,7 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
             # If memory on the GPU is large enough, we load the overlaps onto it
             for i in xrange(N_over):
                 c_overs[i] = c_overs[i].tocoo()
-                c_overs[i] = af.sparse.create_sparse_from_host(c_overs[i].data, c_overs[i].row, c_overs[i].col, c_overs[i].shape[0], c_overs[i].shape[1])
+                c_overs[i] = af.create_sparse_from_host(c_overs[i].data, c_overs[i].row, c_overs[i].col, c_overs[i].shape[0], c_overs[i].shape[1])
         except Exception:
             if comm.rank == 0:
                 print_and_log(["Not enough memory on GPUs: GPUs are used for projection only"], 'info', logger)
@@ -315,7 +314,9 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
             all_spikes   = local_peaktimes + local_offset
 
             # Because for GPU, slicing by columns is more efficient, we need to transpose b
-            b           = b.T
+            if use_gpu:
+                b = b.T
+    
             if use_gpu and not full_gpu:
                 b = to_numpy(b)
                 if len(b.shape) == 1:
