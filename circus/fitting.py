@@ -4,6 +4,9 @@ from .shared.mpi import SHARED_MEMORY
 from .shared.probes import get_nodes_and_edges
 from circus.shared.messages import print_and_log, init_logging
 
+def to_numpy(A):
+    return numpy.asarray(A.to_list(), dtype=numpy.float32)
+
 def main(params, nb_cpu, nb_gpu, use_gpu):
 
     #################################################################
@@ -38,15 +41,15 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
     #################################################################
 
     if use_gpu:
-        import cudamat as cmt
+        import arrayfire as af
         ## Need to properly handle multi GPU per MPI nodes?
         if nb_gpu > nb_cpu:
             gpu_id = int(comm.rank//nb_cpu)
         else:
             gpu_id = 0
-        cmt.cuda_set_device(gpu_id)
-        cmt.init()
-        cmt.cuda_sync_threads()
+        
+        af.set_backend('cuda')
+        af.set_device(0)
 
     if SHARED_MEMORY:
         templates  = io.load_data_memshared(params, 'templates', normalize=True, transpose=True)
@@ -97,7 +100,8 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
             neighbors[i] = numpy.where(numpy.sum(tmp, 1) != 0)[0]
 
     if use_gpu:
-        templates = cmt.SparseCUDAMatrix(templates, copy_on_host=False)
+        templates = templates.tocoo()
+        templates = af.sparse.create_sparse_from_host(templates.data, templates.row, templates.col, templates.shape[0], templates.shape[1])
 
     info_string   = ''
 
@@ -152,7 +156,8 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
         try:
             # If memory on the GPU is large enough, we load the overlaps onto it
             for i in xrange(N_over):
-                c_overs[i] = cmt.SparseCUDAMatrix(c_overs[i], copy_on_host=False)
+                c_overs[i] = c_overs[i].tocoo()
+                c_overs[i] = af.sparse.create_sparse_from_host(c_overs[i].data, c_overs[i].row, c_overs[i].col, c_overs[i].shape[0], c_overs[i].shape[1])
         except Exception:
             if comm.rank == 0:
                 print_and_log(["Not enough memory on GPUs: GPUs are used for projection only"], 'info', logger)
@@ -179,8 +184,8 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
         comm.Barrier()
 
 
-    if use_gpu and do_spatial_whitening:
-        spatial_whitening = cmt.CUDAMatrix(spatial_whitening, copy_on_host=False)
+    #if use_gpu and do_spatial_whitening:
+    #    spatial_whitening = af.from_ndarray(spatial_whitening)
 
     last_chunk_size = 0
 
@@ -209,11 +214,11 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
         len_chunk             = len(local_chunk)
 
         if do_spatial_whitening:
-            if use_gpu:
-                local_chunk = cmt.CUDAMatrix(local_chunk, copy_on_host=False)
-                local_chunk = local_chunk.dot(spatial_whitening).asarray()
-            else:
-                local_chunk = numpy.dot(local_chunk, spatial_whitening)
+            #if use_gpu:
+            #    local_chunk = af.from_ndarray(local_chunk)
+            #    local_chunk = to_numpy(af.matmul(local_chunk, spatial_whitening))
+            #else:
+            local_chunk = numpy.dot(local_chunk, spatial_whitening)
         if do_temporal_whitening:
             local_chunk = scipy.ndimage.filters.convolve1d(local_chunk, temporal_whitening, axis=0, mode='constant')
 
@@ -270,11 +275,10 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
 
         n_t             = len(local_peaktimes)
         all_indices     = numpy.arange(n_t)
-                            
-
-        if full_gpu:
+        
+        if full_gpu and n_t > 0:
         #   all_indices = cmt.CUDAMatrix(all_indices)
-            tmp_gpu = cmt.CUDAMatrix(local_peaktimes.reshape((1, n_t)), copy_on_host=False)
+            tmp_gpu = af.from_ndarray(local_peaktimes.reshape((1, n_t)))
 
 
         if n_t > 0:
@@ -297,11 +301,12 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
 
             del local_chunk
 
+
             if use_gpu: 
-                sub_mat = cmt.CUDAMatrix(sub_mat, copy_on_host=False)
-                b       = cmt.sparse_dot(templates, sub_mat)
+                sub_mat = af.from_ndarray(sub_mat)
+                b       = af.matmul(templates, sub_mat)
             else:
-                b       = templates.dot(sub_mat)                
+                b       = templates.dot(sub_mat)
 
             del sub_mat
 
@@ -310,16 +315,18 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
             all_spikes   = local_peaktimes + local_offset
 
             # Because for GPU, slicing by columns is more efficient, we need to transpose b
-            #b           = b.transpose()
+            b           = b.T
             if use_gpu and not full_gpu:
-                b = b.asarray()
-
+                b = to_numpy(b)
+                if len(b.shape) == 1:
+                    b = b.reshape((b.shape[0], 1))
+                
             failure     = numpy.zeros(n_t, dtype=numpy.int32)
 
             if full_gpu:
                 mask     = numpy.zeros((2*n_tm, n_t), dtype=numpy.float32)
                 mask[:n_tm, :] = 1
-                data     = cmt.empty(mask.shape)
+                data     = af.Array(dims=mask.shape)
                 patch_gpu= b.shape[1] == 1
             else:
                 mask     = numpy.ones((n_tm, n_t), dtype=numpy.float32)
@@ -342,7 +349,7 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
             while (numpy.mean(failure) < nb_chances):
 
                 if full_gpu:
-                    gpu_mask    = cmt.CUDAMatrix(mask, copy_on_host=False)
+                    gpu_mask    = af.from_ndarray(mask)
                     b.mult(gpu_mask, data)
                     tmp_mat     = data.max(0)
                     argmax_bi   = numpy.argsort(tmp_mat.asarray()[0, :])[::-1]
@@ -399,19 +406,19 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
                     #ts           = ts[good]
                     
                     if len(ts) > 0:
-                        if full_gpu:
-                            tmp  = cmt.CUDAMatrix(numpy.ones((len(ts), 1)), copy_on_host=False)
-                            tmp3 = cmt.CUDAMatrix(-ts.reshape((len(ts), 1)), copy_on_host=False)
-                            tmp  = tmp.dot(tmp_gpu)
-                            tmp.add_col_vec(tmp3)
-                            condition = cmt.empty(tmp.shape)
-                            cmt.abs(tmp, condition).less_than(temp_2_shift + 1)
-                            condition = condition.asarray().astype(numpy.bool)
-                            tmp       = tmp.asarray().astype(numpy.int32)
-                        else:
-                            tmp      = numpy.dot(numpy.ones((len(ts), 1), dtype=numpy.int32), local_peaktimes.reshape((1, n_t)))
-                            tmp     -= ts.reshape((len(ts), 1))
-                            condition = numpy.abs(tmp) <= temp_2_shift
+                        #if full_gpu:
+                        #    tmp  = af.from_ndarray(numpy.ones((len(ts), 1)))
+                        #    tmp3 = af.from_ndarray((-ts.reshape((len(ts), 1))))
+                        #    tmp  = af.matmul(tmp, tmp_gpu)
+                        #    tmp.add_col_vec(tmp3)
+                        #    condition = cmt.empty(tmp.shape)
+                        #    cmt.abs(tmp, condition).less_than(temp_2_shift + 1)
+                        #    condition = condition.asarray().astype(numpy.bool)
+                        #    tmp       = tmp.asarray().astype(numpy.int32)
+                        #else:
+                        tmp      = numpy.dot(numpy.ones((len(ts), 1), dtype=numpy.int32), local_peaktimes.reshape((1, n_t)))
+                        tmp     -= ts.reshape((len(ts), 1))
+                        condition = numpy.abs(tmp) <= temp_2_shift
 
                         for count, keep in enumerate(to_keep):
                             
@@ -422,15 +429,12 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
                             indices[ytmp, numpy.arange(len(ytmp))] = 1
 
                             if full_gpu: 
-                                indices  = cmt.CUDAMatrix(indices, copy_on_host=False)
-                                if patch_gpu:
-                                    b_lines  = b.get_col_slice(0, b.shape[0])
-                                else:
-                                    b_lines  = b.get_col_slice(idx_b[0], idx_b[-1]+1)
-
-                                tmp1 = cmt.sparse_dot(c_overs[inds_temp[keep]], indices, mult=-best_amp[keep])
-                                tmp2 = cmt.sparse_dot(c_overs[inds_temp[keep] + n_tm], indices, mult=-best_amp2[keep])
-                                b_lines.add(tmp1.add(tmp2))
+                                indices  = af.from_ndarray(indices)
+                                tmp1     = cmt.sparse_dot(c_overs[inds_temp[keep]], indices, mult=-best_amp[keep])
+                                tmp2     = cmt.sparse_dot(c_overs[inds_temp[keep] + n_tm], indices, mult=-best_amp2[keep])
+                                    
+                                for idx in af.ParralelRange(idx_b[0], idx_b[-1]+1):
+                                    b[:,idx] += tmp[:, idx] + tmp2[:, idx]
                                 del tmp1, tmp2
                             else:
                                 tmp1   = c_overs[inds_temp[keep]].multiply(-best_amp[keep]).dot(indices)
