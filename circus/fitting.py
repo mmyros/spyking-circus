@@ -4,8 +4,8 @@ from .shared.mpi import SHARED_MEMORY
 from .shared.probes import get_nodes_and_edges
 from circus.shared.messages import print_and_log, init_logging
 
-def to_numpy(A):
-    return numpy.asarray(A.to_list(), dtype=numpy.float32)
+def to_numpy(A, dtype=numpy.float32):
+    return numpy.asarray(A.to_list(), dtype=dtype)
 
 def main(params, nb_cpu, nb_gpu, use_gpu):
 
@@ -151,12 +151,14 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
     if do_temporal_whitening:
         temporal_whitening = io.load_data(params, 'temporal_whitening')
 
+    if use_gpu:
+        spatial_whitening  = af.from_ndarray(spatial_whitening)
+
     if full_gpu:
         try:
             # If memory on the GPU is large enough, we load the overlaps onto it
             for i in xrange(N_over):
-                c_overs[i] = c_overs[i].tocoo()
-                c_overs[i] = af.create_sparse_from_host(c_overs[i].data, c_overs[i].row, c_overs[i].col, c_overs[i].shape[0], c_overs[i].shape[1])
+                c_overs[i] = af.create_sparse_from_host(c_overs[i].data, c_overs[i].indptr, c_overs[i].indices, c_overs[i].shape[0], c_overs[i].shape[1])
         except Exception:
             if comm.rank == 0:
                 print_and_log(["Not enough memory on GPUs: GPUs are used for projection only"], 'info', logger)
@@ -213,11 +215,11 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
         len_chunk             = len(local_chunk)
 
         if do_spatial_whitening:
-            #if use_gpu:
-            #    local_chunk = af.from_ndarray(local_chunk)
-            #    local_chunk = to_numpy(af.matmul(local_chunk, spatial_whitening))
-            #else:
-            local_chunk = numpy.dot(local_chunk, spatial_whitening)
+            if use_gpu:
+                local_chunk = af.from_ndarray(local_chunk)
+                local_chunk = to_numpy(af.matmul(local_chunk, spatial_whitening)).T
+            else:
+                local_chunk = numpy.dot(local_chunk, spatial_whitening)
         if do_temporal_whitening:
             local_chunk = scipy.ndimage.filters.convolve1d(local_chunk, temporal_whitening, axis=0, mode='constant')
 
@@ -300,7 +302,6 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
 
             del local_chunk
 
-
             if use_gpu: 
                 sub_mat = af.from_ndarray(sub_mat)
                 b       = af.matmul(templates, sub_mat)
@@ -314,21 +315,19 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
             all_spikes   = local_peaktimes + local_offset
 
             # Because for GPU, slicing by columns is more efficient, we need to transpose b
-            if use_gpu:
-                b = b.T
+            #if use_gpu:
+            #    b = b.T
+            #    print b.shape
     
             if use_gpu and not full_gpu:
-                b = to_numpy(b)
-                if len(b.shape) == 1:
-                    b = b.reshape((b.shape[0], 1))
+                b = to_numpy(b).T
                 
             failure     = numpy.zeros(n_t, dtype=numpy.int32)
 
             if full_gpu:
-                mask     = numpy.zeros((2*n_tm, n_t), dtype=numpy.float32)
-                mask[:n_tm, :] = 1
-                data     = af.Array(dims=mask.shape)
-                patch_gpu= b.shape[1] == 1
+                mask     = numpy.ones((n_tm, n_t), dtype=numpy.float32)
+                mask     = af.from_ndarray(mask)
+                sub_b    = b[:n_tm, :]
             else:
                 mask     = numpy.ones((n_tm, n_t), dtype=numpy.float32)
                 sub_b    = b[:n_tm, :]
@@ -350,10 +349,9 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
             while (numpy.mean(failure) < nb_chances):
 
                 if full_gpu:
-                    gpu_mask    = af.from_ndarray(mask)
-                    b.mult(gpu_mask, data)
-                    tmp_mat     = data.max(0)
-                    argmax_bi   = numpy.argsort(tmp_mat.asarray()[0, :])[::-1]
+                    data        = sub_b * mask
+                    tmp_mat     = af.max(data, 0)
+                    argmax_bi   = to_numpy(af.sort_index(tmp_mat, is_ascending=False)[1], dtype=numpy.uint32).astype(numpy.int32).flatten()
                     del tmp_mat
                 else:
                     data        = sub_b * mask
@@ -378,20 +376,28 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
                     argmax_bi = numpy.delete(argmax_bi, indices)
 
                     if full_gpu:
-                        b_array = b.asarray()
-                        sub_b   = b_array[:n_tm, :]
+                        #b_array = b.asarray()
+                        sub_b   = b[:n_tm, :]
+
+
 
                     inds_t, inds_temp = subset, numpy.argmax(numpy.take(sub_b, subset, axis=1), 0)
 
                     if full_gpu:
-                        best_amp  = sub_b[inds_temp, inds_t]/n_scalar
-                        best_amp2 = b_array[inds_temp + n_tm, inds_t]/n_scalar
+                        best_amp  = numpy.zeros(len(inds_temp), dtype=numpy.float32)
+                        best_amp2 = numpy.zeros(len(inds_temp), dtype=numpy.float32)
+                        count     = 0
+                        for i, j in zip(inds_temp, inds_t):
+                            best_amp[count]  = to_numpy(sub_b[i, j])
+                            best_amp2[count] =  to_numpy(b[i + n_tm, j])
+                            mask[i, j]       = 0
+                            count += 1
+                        best_amp  /= n_scalar
+                        best_amp2 /= n_scalar
                     else:
-                        
                         best_amp  = sub_b[inds_temp, inds_t]/n_scalar
                         best_amp2 = b[inds_temp + n_tm, inds_t]/n_scalar
-
-                    mask[inds_temp, inds_t] = 0
+                        mask[inds_temp, inds_t] = 0
 
                     best_amp_n   = best_amp/numpy.take(norm_templates, inds_temp)
                     best_amp2_n  = best_amp2/numpy.take(norm_templates, inds_temp + n_tm)
@@ -431,11 +437,12 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
 
                             if full_gpu: 
                                 indices  = af.from_ndarray(indices)
-                                tmp1     = cmt.sparse_dot(c_overs[inds_temp[keep]], indices, mult=-best_amp[keep])
-                                tmp2     = cmt.sparse_dot(c_overs[inds_temp[keep] + n_tm], indices, mult=-best_amp2[keep])
+                                tmp1     = af.matmul(c_overs[inds_temp[keep]], indices)
+                                tmp2     = af.matmul(c_overs[inds_temp[keep] + n_tm], indices)
                                     
-                                for idx in af.ParralelRange(idx_b[0], idx_b[-1]+1):
-                                    b[:,idx] += tmp[:, idx] + tmp2[:, idx]
+                                for idx in af.ParallelRange(idx_b[0], idx_b[-1]+1):
+                                    b[:,idx] -= best_amp[keep]*tmp1[:, idx] + best_amp2[keep]*tmp2[:, idx]
+
                                 del tmp1, tmp2
                             else:
                                 tmp1   = c_overs[inds_temp[keep]].multiply(-best_amp[keep]).dot(indices)
@@ -453,7 +460,11 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
                     failure[myslice] += 1
                     sub_idx           = (numpy.take(failure, myslice) >= nb_chances)
                     
-                    mask[:, numpy.compress(sub_idx, myslice)] = 0
+                    if full_gpu:
+                        for i in numpy.compress(sub_idx, myslice):
+                            mask[:, i] = 0
+                    else:
+                        mask[:, numpy.compress(sub_idx, myslice)] = 0
 
 
             spikes_to_write     = numpy.array(result['spiketimes'], dtype=numpy.uint32)
@@ -506,7 +517,7 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
             
 
             if full_gpu:
-                del gpu_mask, b, data
+                del b, data
 
     spiketimes_file.flush()
     os.fsync(spiketimes_file.fileno())
