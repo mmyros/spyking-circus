@@ -106,7 +106,9 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
         comm.Barrier()
 
     def WMLDR(data, wname="db4", maxlevel=6, mode='sym'):
-        """Perform wavelet multi-level decomposition and reconstruction (WMLDR) on multichannel
+        """ Function by Martin Spacek from https://github.com/spyke/spyke
+
+        Perform wavelet multi-level decomposition and reconstruction (WMLDR) on multichannel
         data. See Wiltschko2008. Default to Daubechies(4) wavelet. Modifies data in-place, at
         least for now. The effective cutoff frequency is:
 
