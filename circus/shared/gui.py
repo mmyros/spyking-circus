@@ -127,7 +127,7 @@ class MergeWindow(QtGui.QMainWindow):
         self.cc_bin     = params.getfloat('merging', 'cc_bin')
 
         self.bin_size   = int(self.cc_bin * self.sampling_rate * 1e-3)
-        self.max_delay  = 50
+        self.max_delay  = 1 #mmy default 50
 
         self.result     = io.load_data(params, 'results', self.ext_in)
         self.overlap    = h5py.File(self.file_out_suff + '.templates%s.hdf5' %self.ext_in, libver='latest').get('maxoverlap')[:]
@@ -899,7 +899,8 @@ class MergeWindow(QtGui.QMainWindow):
         self.score_ax2.clear()
         self.score_ax3.clear()
         self.update_lag(self.use_lag)
-        self.update_data_sort_order()
+        self.update_data_sort_order() 
+        
         self.update_detail_plot()
         self.update_waveforms()
         self.plot_scores()

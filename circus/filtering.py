@@ -49,8 +49,10 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
 
         chunk_size    = params.getint('data', 'chunk_size')
         nb_chunks, _  = data_file_in.analyze(chunk_size)
-
-        #b, a          = signal.butter(3, np.array(cut_off)/(params.rate/2.), 'pass')
+        do_butter=False # mmyros
+        do_lowess=False  # otherwise wavelet if both lowess and butter are false
+        if do_butter:
+            b, a          = signal.butter(3, np.array(cut_off)/(params.rate/2.), 'pass')
         all_chunks    = numpy.arange(nb_chunks, dtype=numpy.int64)
         to_process    = all_chunks[comm.rank::comm.size]
         loc_nb_chunks = len(to_process)
@@ -77,8 +79,12 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
             if do_filtering:
                 for i in nodes:
                     try:
-                        #local_chunk[:, i]  = signal.filtfilt(b, a, local_chunk[:, i])
-                        local_chunk[:, i]  = WMLDR(local_chunk[:, i])
+                        if do_butter:
+                            local_chunk[:, i]  = signal.filtfilt(b, a, local_chunk[:, i])
+                        elif do_lowess:
+                            local_chunk[:, i]  = lowess(local_chunk[:, i])
+                        else:
+                            local_chunk[:, i]  = WMLDR(local_chunk[:, i])
                     except Exception:
                         pass
                 local_chunk[:, i] -= numpy.median(local_chunk[:, i])
@@ -104,6 +110,23 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
 
 
         comm.Barrier()
+    def lowess(data,frac=0.1,deltafrac=0.01):
+        ''' Local regression (Lowess) filter for spike extraction
+        dependency: pip install cylowess
+        '''
+        #import statsmodels.api as sm
+        import cylowess
+        data = np.atleast_2d(data)
+        nt = data.shape[1]
+        # filter data in place, iterate over channels in rows:
+        nchans = len(data)
+        for chani in range(nchans):
+            # lowess using vanilla statsmodels
+            #fit=sm.nonparametric.lowess(data[chani],range(len(data[chani])))[:,1]
+            # cython implementation
+            fit=cylowess.lowess(numpy.asarray(data[chani],dtype='float'),numpy.asarray(range(len(data[chani])),dtype='float'),frac=frac,it=0,delta=deltafrac*len(data[chani]))[:,1]
+            data[chani]=data[chani]-fit
+
 
     def WMLDR(data, wname="db4", maxlevel=6, mode='sym'):
         """ Function by Martin Spacek from https://github.com/spyke/spyke
