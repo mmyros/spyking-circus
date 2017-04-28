@@ -50,7 +50,7 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
         chunk_size    = params.getint('data', 'chunk_size')
         nb_chunks, _  = data_file_in.analyze(chunk_size)
         do_butter=False # mmyros
-        do_lowess=False  # otherwise wavelet if both lowess and butter are false
+        do_lowess=True  # otherwise wavelet if both lowess and butter are false
         if do_butter:
             b, a          = signal.butter(3, np.array(cut_off)/(params.rate/2.), 'pass')
         all_chunks    = numpy.arange(nb_chunks, dtype=numpy.int64)
@@ -124,9 +124,9 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
             # lowess using vanilla statsmodels
             #fit=sm.nonparametric.lowess(data[chani],range(len(data[chani])))[:,1]
             # cython implementation
-            fit=cylowess.lowess(numpy.asarray(data[chani],dtype='float'),numpy.asarray(range(len(data[chani])),dtype='float'),frac=frac,it=0,delta=deltafrac*len(data[chani]))[:,1]
+            fit=cylowess.lowess(np.asarray(data[chani],dtype='float'),np.asarray(range(len(data[chani])),dtype='float'),frac=frac,it=0,delta=deltafrac*len(data[chani]))[:,1]
             data[chani]=data[chani]-fit
-
+        return data
 
     def WMLDR(data, wname="db4", maxlevel=6, mode='sym'):
         """ Function by Martin Spacek from https://github.com/spyke/spyke
