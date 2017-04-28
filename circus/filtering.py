@@ -124,7 +124,8 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
             # lowess using vanilla statsmodels
             #fit=sm.nonparametric.lowess(data[chani],range(len(data[chani])))[:,1]
             # cython implementation
-            fit=cylowess.lowess(np.asarray(data[chani],dtype='float'),np.asarray(range(len(data[chani])),dtype='float'),frac=frac,it=0,delta=deltafrac*len(data[chani]))[:,1]
+            delta=4.61#deltafrac*len(data[chani])
+            fit=cylowess.lowess(np.asarray(data[chani],dtype='float'),np.asarray(range(len(data[chani])),dtype='float'),frac=frac,it=0,delta=delta)[:,1]
             data[chani]=data[chani]-fit
         return data
 
