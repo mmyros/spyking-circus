@@ -78,15 +78,14 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
 
             if do_filtering:
                 for i in nodes:
-                    try:
-                        if do_butter:
-                            local_chunk[:, i]  = signal.filtfilt(b, a, local_chunk[:, i])
-                        elif do_lowess:
-                            local_chunk[:, i]  = lowess(local_chunk[:, i])
-                        else:
-                            local_chunk[:, i]  = WMLDR(local_chunk[:, i])
-                    except Exception:
-                        pass
+                    #try:
+                    if do_butter:
+                        local_chunk[:, i]  = signal.filtfilt(b, a, local_chunk[:, i])
+                    elif do_lowess:
+                        local_chunk[:, i]  = lowess(local_chunk[:, i])
+                    else:
+                        local_chunk[:, i]  = WMLDR(local_chunk[:, i])
+                    #except Exception:                        pass
                 local_chunk[:, i] -= numpy.median(local_chunk[:, i])
 
             if do_remove_median:
@@ -110,7 +109,7 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
 
 
         comm.Barrier()
-    def lowess(data,frac=0.1,deltafrac=0.01):
+    def lowess(data,frac=0.01):
         ''' Local regression (Lowess) filter for spike extraction
         dependency: pip install cylowess
         '''
@@ -124,7 +123,7 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
             # lowess using vanilla statsmodels
             #fit=sm.nonparametric.lowess(data[chani],range(len(data[chani])))[:,1]
             # cython implementation
-            delta=4.61#deltafrac*len(data[chani])
+            delta=67.61#deltafrac*len(data[chani])
             fit=cylowess.lowess(np.asarray(data[chani],dtype='float'),np.asarray(range(len(data[chani])),dtype='float'),frac=frac,it=0,delta=delta)[:,1]
             data[chani]=data[chani]-fit
         return data
