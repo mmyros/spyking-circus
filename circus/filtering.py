@@ -78,15 +78,14 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
 
             if do_filtering:
                 for i in nodes:
-                    try:
-                        if do_butter:
-                            local_chunk[:, i]  = signal.filtfilt(b, a, local_chunk[:, i])
-                        elif do_lowess:
-                            local_chunk[:, i]  = lowess(local_chunk[:, i])
-                        else:
-                            local_chunk[:, i]  = WMLDR(local_chunk[:, i])
-                    except Exception:
-                        pass
+                    #try:
+                    if do_butter:
+                        local_chunk[:, i]  = signal.filtfilt(b, a, local_chunk[:, i])
+                    elif do_lowess:
+                        local_chunk[:, i]  = lowess(local_chunk[:, i])
+                    else:
+                        local_chunk[:, i]  = WMLDR(local_chunk[:, i])
+                    #except Exception:     pass
                 local_chunk[:, i] -= numpy.median(local_chunk[:, i])
 
             if do_remove_median:
