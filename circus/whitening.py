@@ -65,7 +65,8 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
 
 
     # I guess this is more relevant, to take signals from all over the recordings
-    all_chunks     = numpy.random.permutation(numpy.arange(nb_chunks, dtype=numpy.int32))
+    start_whitening=60*15/chunk_size
+    all_chunks     = numpy.random.permutation(numpy.arange(start_whitening,nb_chunks, dtype=numpy.int32))
     all_electrodes = numpy.random.permutation(N_e)
 
     for gidx in [all_chunks[comm.rank]]:
