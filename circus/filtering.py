@@ -50,7 +50,7 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
         chunk_size    = params.getint('data', 'chunk_size')
         nb_chunks, _  = data_file_in.analyze(chunk_size)
         do_butter=False # mmyros
-        do_lowess=True  # otherwise wavelet if both lowess and butter are false
+        do_lowess=False  # otherwise wavelet if both lowess and butter are false
         if do_butter:
             b, a          = signal.butter(3, np.array(cut_off)/(params.rate/2.), 'pass')
         all_chunks    = numpy.arange(nb_chunks, dtype=numpy.int64)
