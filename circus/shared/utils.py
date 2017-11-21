@@ -7,13 +7,87 @@ import scipy.sparse as sp
 from math import log, sqrt
 from scipy import linalg
 import scipy.interpolate
-import numpy, pylab, os, mpi4py, tempfile
+import numpy, os, mpi4py, tempfile
 import scipy.linalg, scipy.optimize, cPickle, socket, tempfile, shutil, scipy.ndimage.filters, scipy.signal
+import h5py
 from mpi import *
 import files as io
 from messages import print_and_log
-
 logger = logging.getLogger(__name__)
+import circus
+from distutils.version import StrictVersion
+
+def test_patch_for_similarities(params, extension):
+    
+    file_out_suff  = params.get('data', 'file_out_suff')
+    template_file  = file_out_suff + '.templates%s.hdf5' %extension
+    if os.path.exists(template_file):
+        try:
+            myfile = h5py.File(template_file, 'r', libver='latest')
+            version = myfile.get('version')[0].decode('ascii')
+            myfile.close()
+        except Exception:
+            version = None
+    else:
+        raise Exception('No templates found! Check suffix?')
+
+    if version is not None:
+        if (StrictVersion(version) >= StrictVersion('0.6.0')):
+            return True
+    else:
+        print_and_log(["Version is below 0.6.0"], 'debug', logger)
+        return False
+
+
+def apply_patch_for_similarities(params, extension):
+
+    if not test_patch_for_similarities(params, extension):
+
+        file_out_suff  = params.get('data', 'file_out_suff')
+
+        if comm.rank == 0:
+
+            print_and_log(["Fixing overlaps from 0.5.XX..."], 'default', logger)
+
+            over_file = file_out_suff + '.overlap.hdf5'
+            if os.path.exists(over_file):
+                myfile = h5py.File(over_file, 'r', libver='latest')
+                over_x = myfile.get('over_x')[:].ravel()
+                over_y = myfile.get('over_y')[:].ravel()
+                over_data = myfile.get('over_data')[:].ravel()
+                over_shape = myfile.get('over_shape')[:].ravel()
+                myfile.close()
+                overlap = scipy.sparse.csc_matrix((over_data, (over_x, over_y)), shape=over_shape)
+            else:
+                raise Exception('No overlaps found! Check suffix?')
+
+            
+            myfile2 = h5py.File(file_out_suff + '.templates%s.hdf5' %extension, 'r+', libver='latest')
+            N_tm    = int(numpy.sqrt(overlap.shape[0]))
+            N_t     = params.getint('detection', 'N_t')
+
+            if 'maxoverlap' in myfile2.keys():
+                maxoverlap = myfile2['maxoverlap']
+            else:
+                maxoverlap = myfile2.create_dataset('maxoverlap', shape=(N_tm//2, N_tm//2), dtype=numpy.float32)
+
+            if 'maxlag' in myfile2.keys():
+                maxlag = myfile2['maxlag']
+            else:
+                maxlag = myfile2.create_dataset('maxlag', shape=(N_tm//2, N_tm//2), dtype=numpy.int32)
+
+            if 'version' in myfile2.keys():
+                version = myfile2['version']
+            else:
+                version = myfile2.create_dataset('version', data=numpy.array([circus.__version__.encode('ascii', 'ignore')]))
+
+            for i in get_tqdm_progressbar(xrange(N_tm//2 - 1)):
+                data                = overlap[i*N_tm+i+1:i*N_tm+N_tm//2].toarray()
+                maxlag[i, i+1:]     = N_t - numpy.argmax(data, 1)
+                maxlag[i+1:, i]     = -maxlag[i, i+1:]
+                maxoverlap[i, i+1:] = numpy.max(data, 1)
+                maxoverlap[i+1:, i] = maxoverlap[i, i+1:]
+            myfile2.close()
 
 
 def query_yes_no(question, default="yes"):
@@ -48,6 +122,24 @@ def query_yes_no(question, default="yes"):
         else:
             sys.stdout.write("Please respond with 'yes' or 'no' "
                              "(or 'y' or 'n').\n")
+
+def get_parallel_hdf5_flag(params):
+    ''' Get parallel HDF5 flag.
+
+    Argument
+    --------
+    params: dict
+        Dictionnary of parameters.
+
+    Return
+    ------
+    flag: bool
+        True if parallel HDF5 is available and the user want to use it.
+    '''
+
+    flag = h5py.get_config().mpi and params.getboolean('data', 'parallel_hdf5')
+
+    return flag
 
 def purge(file, pattern):
     dir = os.path.dirname(os.path.abspath(file))

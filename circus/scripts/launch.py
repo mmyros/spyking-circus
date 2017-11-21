@@ -6,7 +6,6 @@ import shutil
 import subprocess
 import psutil
 import h5py
-import copy
 import pkg_resources
 import circus
 import logging
@@ -15,7 +14,7 @@ from os.path import join as pjoin
 import colorama
 colorama.init(autoreset=True)
 from colorama import Fore, Back, Style
-from circus.shared.files import data_stats 
+from circus.shared.files import data_stats
 from circus.shared.messages import print_error, print_info, print_and_log, get_colored_header, init_logging
 from circus.shared.mpi import SHARED_MEMORY, comm, gather_mpi_arguments
 from circus.shared.parser import CircusParser
@@ -48,8 +47,8 @@ def main(argv=None):
 
     all_steps = ['whitening', 'clustering', 'fitting', 'gathering', 'extracting', 'filtering', 'converting', 'benchmarking', 'merging', 'validating']
 
-    if os.path.exists(user_path + 'config.params'):
-        config_file = os.path.abspath(user_path + 'config.params')
+    if os.path.exists(pjoin(user_path, 'config.params')):
+        config_file = os.path.abspath(pjoin(user_path, 'config.params'))
     else:
         config_file = os.path.abspath(pkg_resources.resource_filename('circus', 'config.params'))
 
@@ -62,7 +61,7 @@ def main(argv=None):
     header += Fore.GREEN + "##################################################################"
     header += Fore.RESET
 
-    method_help = '''by default, first 4 steps are performed, 
+    method_help = '''by default, first 4 steps are performed,
 but a subset x,y can be done. Steps are:
  - filtering
  - whitening
@@ -92,12 +91,13 @@ but a subset x,y can be done. Steps are:
                         action='store_true')
     parser.add_argument('-r', '--result', help='GUI to display the results on top of raw data',
                         action='store_true')
+    parser.add_argument('-s', '--second', type=int, default=0, help='If preview mode, begining of the preview [in s]')
     parser.add_argument('-e', '--extension', help='extension to consider for merging and converting',
                         default='None')
     parser.add_argument('-o', '--output', help='output file [for generation of synthetic benchmarks]')
     parser.add_argument('-t', '--type', help='benchmark type',
                         choices=['fitting', 'clustering', 'synchrony'])
-    
+
     if len(argv) == 0:
         parser.print_help()
         sys.exit(0)
@@ -112,13 +112,13 @@ but a subset x,y can be done. Steps are:
 
     # To save some typing later
     (nb_cpu, nb_gpu, hostfile, batch,
-     preview, result, extension, output, benchmark, info) = (args.cpu, args.gpu, args.hostfile, args.batch,
-                                                       args.preview, args.result, args.extension, args.output, args.type, args.info)
+     preview, result, extension, output, benchmark, info, second) = (args.cpu, args.gpu, args.hostfile, args.batch,
+                                                       args.preview, args.result, args.extension, args.output, args.type, args.info, args.second)
     filename = os.path.abspath(args.datafile)
 
     f_next, extens = os.path.splitext(filename)
 
-    if info:    
+    if info:
         if args.datafile.lower() in __supported_data_files__:
             filename = 'tmp'
             if len(__supported_data_files__[args.datafile.lower()].extension) > 0:
@@ -138,7 +138,7 @@ but a subset x,y can be done. Steps are:
     if not os.path.exists(file_params) and not batch:
         print Fore.RED + 'The parameter file %s is not present!' %file_params
         create_params = query_yes_no(Fore.WHITE + "Do you want SpyKING CIRCUS to create a parameter file?")
-        
+
         if create_params:
             print Fore.WHITE + "Creating", file_params
             print Fore.WHITE + "Fill it properly before launching the code! (see documentation)"
@@ -166,7 +166,7 @@ but a subset x,y can be done. Steps are:
             is_writable            = __supported_data_files__['raw_binary'].is_writable
 
     if preview:
-        print_and_log(['Preview mode, showing only first second of the recording'], 'info', logger)
+        print_and_log(['Preview mode, showing only seconds [%d-%d] of the recording' %(second, second+2)], 'info', logger)
 
         tmp_path_loc = os.path.join(os.path.abspath(params.get('data', 'data_file_noext')), 'tmp')
         if not os.path.exists(tmp_path_loc):
@@ -176,11 +176,14 @@ but a subset x,y can be done. Steps are:
         shutil.copyfile(file_params, f_next + '.params')
         steps        = ['filtering', 'whitening']
 
-        chunk_size = int(2*params.rate)
+        chunk_size   = int(2*params.rate)
 
         data_file.open()
         nb_chunks, _           = data_file.analyze(chunk_size)
-        local_chunk, t_offset  = data_file.get_data(0, chunk_size)
+        if nb_chunks < (second + 2):
+            print_and_log(['Recording is too short to display seconds [%d-%d]' %(second, second+2)])
+            sys.exit(0)
+        local_chunk, t_offset  = data_file.get_data(second, second+chunk_size)
         description            = data_file.get_description()
         data_file.close()
 
@@ -197,6 +200,8 @@ but a subset x,y can be done. Steps are:
         new_params.write('whitening', 'safety_time', '0')
         new_params.write('clustering', 'safety_time', '0')
         new_params.write('whitening', 'chunk_size', '2')
+        preview_params =os.path.abspath(params.get('data', 'data_file_noext')) + '.params'
+        new_params.write('data', 'preview_path', preview_params)
 
         description['data_dtype']   = 'float32'
         description['dtype_offset'] = 0
@@ -204,7 +209,7 @@ but a subset x,y can be done. Steps are:
         description['gain']         = 1.
         new_params    = CircusParser(filename)
         data_file_out = new_params.get_data_file(is_empty=True, params=description)
-        
+
         support_parallel_write = data_file_out.parallel_write
         is_writable            = data_file_out.is_writable
 
@@ -244,7 +249,7 @@ but a subset x,y can be done. Steps are:
         print Fore.GREEN + "Hostfile      :", Fore.CYAN + hostfile
         print ""
         print Fore.GREEN + "##################################################################"
-        print ""        
+        print ""
         print Fore.RESET
 
         # Launch the subtasks
@@ -264,14 +269,11 @@ but a subset x,y can be done. Steps are:
         else:
             use_gpu = 'False'
 
-        if preview:
-            tmp_params = copy.deepcopy(new_params.data_file._params)
 
         time = data_stats(params)/60.
 
         if preview:
             params = new_params
-            params.data_file._params = tmp_params
 
         if nb_cpu < psutil.cpu_count():
             if use_gpu != 'True' and not result:
@@ -285,7 +287,7 @@ but a subset x,y can be done. Steps are:
 
         n_edges = get_averaged_n_edges(params)
         if n_edges > 100 and not params.getboolean('clustering', 'compress'):
-            print_and_log(['Template compression is highly recommended based on parameters'], 'info', logger)    
+            print_and_log(['Template compression is highly recommended based on parameters'], 'info', logger)
 
         if params.getint('data', 'N_e') > 500:
             if params.getint('data', 'chunk_size') > 10:
@@ -315,7 +317,7 @@ but a subset x,y can be done. Steps are:
                                                'However, note that if you have streams, informations on times',
                                                'will be discarded'], 'info', logger)
                                 sys.exit(0)
-                        
+
                         if subtask in ['filtering'] and not support_parallel_write and (args.cpu > 1):
                             print_and_log(['No parallel writes for %s: only 1 node used for %s' %(file_format, subtask)], 'info', logger)
                             nb_tasks = str(1)
@@ -357,14 +359,16 @@ but a subset x,y can be done. Steps are:
     if preview or result:
         from circus.shared import gui
         import pylab
-        from matplotlib.backends import qt_compat
-        
-        use_pyside = qt_compat.QT_API == qt_compat.QT_API_PYSIDE
-        if use_pyside:
-            from PySide import QtGui, QtCore, uic
-        else:
-            from PyQt4 import QtGui, QtCore, uic
-        app = QtGui.QApplication([])
+        try:
+            from PyQt5.QtWidgets import QApplication
+        except ImportError:
+            from matplotlib.backends import qt_compat
+            use_pyside = qt_compat.QT_API == qt_compat.QT_API_PYSIDE
+            if use_pyside:
+                from PySide.QtGui import QApplication
+            else:
+                from PyQt4.QtGui import QApplication
+        app = QApplication([])
         try:
             pylab.style.use('ggplot')
         except Exception:

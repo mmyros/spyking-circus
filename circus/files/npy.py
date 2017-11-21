@@ -1,5 +1,5 @@
 import h5py, numpy, re, sys
-from raw_binary import RawBinaryFile
+from .raw_binary import RawBinaryFile
 from numpy.lib.format import open_memmap
 
 class NumpyFile(RawBinaryFile):
@@ -31,7 +31,6 @@ class NumpyFile(RawBinaryFile):
         header['nb_channels'] = self._shape[1]
         header['data_dtype']  = self.data.dtype
         self.size             = len(self.data)
-        self._shape           = (self.size, self.nb_channels)
         self._close()
 
         return header
@@ -58,7 +57,7 @@ class NumpyFile(RawBinaryFile):
 
     def write_chunk(self, time, data):
         self._open(mode='r+')
-        data = self._unscale_data_from_from32(data)
+        data = self._unscale_data_from_float32(data)
         if self.time_axis == 0:
             self.data[time:time+len(data)] = data
         elif self.time_axis == 1:

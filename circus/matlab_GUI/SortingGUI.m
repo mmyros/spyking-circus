@@ -134,6 +134,7 @@ else
     info     = h5info(tmpfile);
     handles.has_hdf5  = true;
     handles.is_dense  = true;
+    handles.has_norms = false;
     has_tagged        = false;
     for id=1:size(info.Datasets, 1)
         if strcmp(info.Datasets(id).Name, 'temp_x')
@@ -141,6 +142,9 @@ else
         end
         if strcmp(info.Datasets(id).Name, 'tagged')
             has_tagged = true;
+        end
+        if strcmp(info.Datasets(id).Name, 'norms')
+            handles.has_norms = true;
         end
     end
     if handles.is_dense
@@ -163,6 +167,12 @@ else
     if has_tagged
         handles.Tagged = h5read(tmpfile, '/tagged');
     end
+    
+    if handles.has_norms
+        norms = double(h5read(tmpfile, '/norms'));
+        handles.norms = reshape(norms, [], 2);
+    end
+    
     has_amptrend = false;
     for id=1:size(info.Groups, 1)
         if strcmp(info.Groups(id).Name, 'amptrend')
@@ -963,6 +973,10 @@ handles.overlap(:,CellNb2)   = [];
 handles.amp_time_list(CellNb2) = [];
 handles.amp_meanamp_list(CellNb2) = [];
 
+if handles.has_norms
+    handles.norms(CellNb2, :) = [];
+end
+
 if length(handles.SpikeTimes{CellNb})>=handles.amp_minNspk
     [handles.amp_time_list{CellNb}, handles.amp_meanamp_list{CellNb}] = ...
         get_mean_template_amplitude(handles.amp_Nbin, handles.SpikeTimes{CellNb}, handles.Amplitudes{CellNb});
@@ -1519,12 +1533,24 @@ x_surround = handles.H.elecMx*str2double(get(handles.XYratio, 'String')) + handl
 x_limits =  (handles.H.fullX+ handles.H.marginX)*str2double(get(handles.XYratio, 'String'));
 x_surround = max(x_surround, x_limits(1));
 x_surround = min(x_surround, x_limits(2));
+
+if x_surround(1) == x_surround(2)
+    x_surround(1) = x_surround(1) - 0.5;
+    x_surround(2) = x_surround(2) + 0.5;
+end
+
 set(handles.TemplateWin, 'XLim', x_surround);
 y_surround = handles.H.elecMy + handles.H.zoom_coef*[-1, 1];
 
 y_limits =  handles.H.fullY + handles.H.marginY;
 y_surround = max(y_surround, y_limits(1));
 y_surround = min(y_surround, y_limits(2));
+
+if y_surround(1) == y_surround(2)
+    y_surround(1) = y_surround(1) - 0.5;
+    y_surround(2) = y_surround(2) + 0.5;
+end
+
 set(handles.TemplateWin, 'YLim', y_surround);
 
 is_changes = (~isequal(xlim_old, x_surround)) || (~isequal(ylim_old, y_surround));
@@ -1556,6 +1582,10 @@ handles.overlap(:,CellNb)   = [];
 
 handles.amp_time_list(CellNb) = [];
 handles.amp_meanamp_list(CellNb) = [];
+
+if handles.has_norms
+    handles.norms(CellNb, :) = [];
+end
 
 nb_actions = length(handles.all_actions);
 handles.all_actions{nb_actions + 1} = struct('action', 'remove', 'source', CellNb);
@@ -1634,8 +1664,10 @@ h5write(tmp_templates, '/temp_x', int32(x) - 1);
 h5write(tmp_templates, '/temp_y', int32(y) - 1);
 h5write(tmp_templates, '/temp_data', single(z));
 
-
-
+if handles.has_norms
+    h5create(tmp_templates, '/norms', numel(handles.norms));
+    h5write(tmp_templates, '/norms', reshape(handles.norms, [], 1));
+end
 
 %h5create(tmp_templates, '/templates', [2*nb_templates handles.templates_size(2) handles.templates_size(1)])
 %nb_to_write = 100;
@@ -1673,7 +1705,7 @@ movefile(tmp_templates, output_file_temp)
 h5create(output_file_temp, '/limits', size(transpose(handles.AmpLim)));
 h5write(output_file_temp, '/limits', transpose(handles.AmpLim));
 h5create(output_file_temp, '/maxoverlap', size(transpose(overlap)));
-h5write(output_file_temp, '/maxoverlap', transpose(overlap));
+h5write(output_file_temp, '/maxoverlap', transpose(overlap)*handles.templates_size(1) * handles.templates_size(2));
 h5create(output_file_temp, '/tagged', size(transpose(handles.Tagged)));
 h5write(output_file_temp, '/tagged', transpose(handles.Tagged));
 for id=1:nb_templates
@@ -1750,6 +1782,8 @@ handles.clusters    = handles.clusters(myslice);
 handles.BestElec    = handles.BestElec(myslice);
 handles.overlap     = handles.overlap(myslice,:);
 handles.overlap     = handles.overlap(:,myslice);
+handles.overlap(CellNb, CellNb+1) = 1;
+handles.overlap(CellNb+1, CellNb) = 1;
 handles.to_keep     = handles.to_keep(myslice);
 
 handles.amp_time_list = handles.amp_time_list(myslice);
@@ -2058,9 +2092,9 @@ if duration/2 == round(duration/2)
     duration = duration + 1;
 end
 
-Y = handles.Amplitudes{CellNb};
+Y = handles.Amplitudes{CellNb}(:);
 
-X = double(handles.SpikeTimes{CellNb});
+X = double(handles.SpikeTimes{CellNb}(:));
 
 xp = xp / max(X);
 

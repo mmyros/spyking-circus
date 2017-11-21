@@ -33,8 +33,9 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
     max_chunk      = params.getfloat('fitting', 'max_chunk')
     noise_thr      = params.getfloat('clustering', 'noise_thr')
     collect_all    = params.getboolean('fitting', 'collect_all')
-    inv_nodes        = numpy.zeros(N_total, dtype=numpy.int32)
-    inv_nodes[nodes] = numpy.argsort(nodes)
+    ignore_dead_times = params.getboolean('triggers', 'ignore_times')
+    inv_nodes         = numpy.zeros(N_total, dtype=numpy.int32)
+    inv_nodes[nodes]  = numpy.argsort(nodes)
     #################################################################
 
     if use_gpu:
@@ -61,6 +62,7 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
     n_scalar       = N_e*N_t
     last_spikes    = numpy.zeros((n_tm, 1), dtype=numpy.int32)
     temp_window    = numpy.arange(-template_shift, template_shift+1)
+    size_window    = N_e*(2*template_shift+1)
 
     if not amp_auto:
         amp_limits       = numpy.zeros((n_tm, 2))
@@ -87,6 +89,18 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
             waveform_pos /= (numpy.abs(numpy.sum(waveform_pos))* len(waveform_pos))
             matched_tresholds_pos = io.load_data(params, 'matched-thresholds-pos')
 
+    if ignore_dead_times:
+        dead_times = numpy.loadtxt(params.get('triggers', 'dead_file'))
+        if len(dead_times.shape) == 1:
+            dead_times = dead_times.reshape(1, 2)
+        dead_in_ms = params.getboolean('triggers', 'dead_in_ms')
+        if dead_in_ms:
+            dead_times *= numpy.int64(data_file.sampling_rate*1e-3)
+        dead_times = dead_times.astype(numpy.int64)
+        all_dead_times = []
+        for i in xrange(len(dead_times)):
+            all_dead_times += range(dead_times[i, 0], dead_times[i, 1])
+
     thresholds = io.load_data(params, 'thresholds')
 
 
@@ -110,21 +124,27 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
 
     comm.Barrier()
 
-    
-    if SHARED_MEMORY:
-        c_overs    = io.load_data_memshared(params, 'overlaps', nb_cpu=nb_cpu, nb_gpu=nb_gpu, use_gpu=use_gpu)        
-        c_overlap  = io.get_overlaps(params, nb_cpu=nb_cpu, nb_gpu=nb_gpu, use_gpu=use_gpu)
+    c_overlap  = io.get_overlaps(params, nb_cpu=nb_cpu, nb_gpu=nb_gpu, use_gpu=use_gpu)
+    over_shape = c_overlap.get('over_shape')[:]
+    N_over     = int(numpy.sqrt(over_shape[0]))
+    S_over     = over_shape[1]
+    ## If the number of overlaps is different from templates, we need to recompute them
+    if N_over != N_tm:
+        if comm.rank == 0:
+            print_and_log(['Templates have been modified, recomputing the overlaps...'], 'default', logger)
+        c_overlap  = io.get_overlaps(params, erase=True, nb_cpu=nb_cpu, nb_gpu=nb_gpu, use_gpu=use_gpu)
         over_shape = c_overlap.get('over_shape')[:]
         N_over     = int(numpy.sqrt(over_shape[0]))
         S_over     = over_shape[1]
+
+    if SHARED_MEMORY:
+        c_overs    = io.load_data_memshared(params, 'overlaps', nb_cpu=nb_cpu, nb_gpu=nb_gpu, use_gpu=use_gpu)
     else:
         c_overlap  = io.get_overlaps(params, nb_cpu=nb_cpu, nb_gpu=nb_gpu, use_gpu=use_gpu)
         over_x     = c_overlap.get('over_x')[:]
         over_y     = c_overlap.get('over_y')[:]
         over_data  = c_overlap.get('over_data')[:]
         over_shape = c_overlap.get('over_shape')[:]
-        N_over     = int(numpy.sqrt(over_shape[0]))
-        S_over     = over_shape[1]
         c_overlap.close()
 
         # To be faster, we rearrange the overlaps into a dictionnary. This has a cost: twice the memory usage for 
@@ -197,11 +217,11 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
         is_last  = data_file.is_last_chunk(gidx, nb_chunks)
 
         if is_last:
-            padding = (-2*template_shift, 0)
+            padding = (-temp_2_shift, 0)
         elif is_first:
-            padding = (0, 2*template_shift)
+            padding = (0, temp_2_shift)
         else:
-            padding = (-2*template_shift, 2*template_shift)
+            padding = (-temp_2_shift, temp_2_shift)
 
         result       = {'spiketimes' : [], 'amplitudes' : [], 'templates' : []}
 
@@ -253,10 +273,12 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
                 if collect_all:
                     all_found_spikes[i] += peaktimes.tolist()
 
-
-            
         local_peaktimes = numpy.unique(local_peaktimes)
-        
+
+        if ignore_dead_times:
+            local_peaktimes = numpy.array(list(set(local_peaktimes + t_offset).difference(all_dead_times)), dtype=numpy.int32) - t_offset
+            local_peaktimes = numpy.sort(local_peaktimes)
+
         #print "Removing the useless borders..."
         local_borders   = (template_shift, len_chunk - template_shift)
         idx             = (local_peaktimes >= local_borders[0]) & (local_peaktimes < local_borders[1])
@@ -265,12 +287,15 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
         if collect_all:
             for i in xrange(N_e):
                 all_found_spikes[i] = numpy.array(all_found_spikes[i], dtype=numpy.int32)
+
+                if ignore_dead_times:
+                    all_found_spikes[i] = numpy.array(list(set(all_found_spikes[i] + t_offset).difference(all_dead_times)), dtype=numpy.int32) - t_offset
+                    all_found_spikes[i] = numpy.sort(all_found_spikes[i])
+
                 idx                 = (all_found_spikes[i] >= local_borders[0]) & (all_found_spikes[i] < local_borders[1])
                 all_found_spikes[i] = numpy.compress(idx, all_found_spikes[i])
 
         n_t             = len(local_peaktimes)
-        all_indices     = numpy.arange(n_t)
-                            
 
         if full_gpu:
         #   all_indices = cmt.CUDAMatrix(all_indices)
@@ -284,7 +309,7 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
                 c_local_chunk = local_chunk.copy()
 
             local_chunk = local_chunk.T.ravel()
-            sub_mat     = numpy.zeros((N_e*(2*template_shift+1), n_t), dtype=numpy.float32)
+            sub_mat     = numpy.zeros((size_window, n_t), dtype=numpy.float32)
 
             if len_chunk != last_chunk_size:
                 slice_indices = numpy.zeros(0, dtype=numpy.int32)
@@ -325,13 +350,6 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
                 mask     = numpy.ones((n_tm, n_t), dtype=numpy.float32)
                 sub_b    = b[:n_tm, :]
 
-            min_time     = local_peaktimes.min()
-            max_time     = local_peaktimes.max()
-            local_len    = max_time - min_time + 1
-            min_times    = numpy.maximum(local_peaktimes - min_time - temp_2_shift, 0)
-            max_times    = numpy.minimum(local_peaktimes - min_time + temp_2_shift + 1, max_time - min_time)
-            max_n_t      = int(space_explo*(max_time-min_time+1)//(2*temp_2_shift + 1))
-
             if collect_all:
                 c_all_times = numpy.zeros((len_chunk, N_e), dtype=numpy.bool)
                 c_min_times = numpy.maximum(numpy.arange(len_chunk) - template_shift, 0)
@@ -351,104 +369,72 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
                     data        = sub_b * mask
                     argmax_bi   = numpy.argsort(numpy.max(data, 0))[::-1]
 
-                while (len(argmax_bi) > 0):
-
-                    subset          = []
-                    indices         = []
-                    all_times       = numpy.zeros(local_len, dtype=numpy.bool)
-
-                    for count, idx in enumerate(argmax_bi):
-                        myslice = all_times[min_times[idx]:max_times[idx]]
-                        if not myslice.any():
-                            subset  += [idx]
-                            indices += [count]
-                            all_times[min_times[idx]:max_times[idx]] = True
-                        if len(subset) > max_n_t:
-                            break
-
-                    subset    = numpy.array(subset, dtype=numpy.int32)
-                    argmax_bi = numpy.delete(argmax_bi, indices)
+                for peak_index in argmax_bi:
 
                     if full_gpu:
                         b_array = b.asarray()
                         sub_b   = b_array[:n_tm, :]
 
-                    inds_t, inds_temp = subset, numpy.argmax(numpy.take(sub_b, subset, axis=1), 0)
+                    peak_scalar_products = np.take(sub_b, peak_index, axis=1)
+                    best_template_index  = np.argmax(peak_scalar_products, axis=0)
+                    best_template2_index = best_template_index + n_tm
 
                     if full_gpu:
-                        best_amp  = sub_b[inds_temp, inds_t]/n_scalar
-                        best_amp2 = b_array[inds_temp + n_tm, inds_t]/n_scalar
+                        best_amp  = sub_b[best_template_index, peak_index]/n_scalar
+                        best_amp2 = b_array[best_template_index, peak_index]/n_scalar
                     else:
+                        best_amp  = sub_b[best_template_index, peak_index]/n_scalar
+                        best_amp2 = b[best_template2_index, peak_index]/n_scalar
+
+                    best_amp_n   = best_amp/norm_templates[best_template_index]
+                    best_amp2_n  = best_amp2/norm_templates[best_template2_index]
+
+                    # Verify amplitude constraint.
+                    a_min = amp_limits[best_template_index, 0]
+                    a_max = amp_limits[best_template_index, 1]
+                
+                    if (a_min <= best_amp_n) & (best_amp_n <= a_max):
+                        # Keep the matching.
+                        peak_time_step = local_peaktimes[peak_index]
                         
-                        best_amp  = sub_b[inds_temp, inds_t]/n_scalar
-                        best_amp2 = b[inds_temp + n_tm, inds_t]/n_scalar
-
-                    mask[inds_temp, inds_t] = 0
-
-                    best_amp_n   = best_amp/numpy.take(norm_templates, inds_temp)
-                    best_amp2_n  = best_amp2/numpy.take(norm_templates, inds_temp + n_tm)
-
-                    all_idx      = ((best_amp_n >= amp_limits[inds_temp, 0]) & (best_amp_n <= amp_limits[inds_temp, 1]))
-                    to_keep      = numpy.where(all_idx == True)[0]
-                    to_reject    = numpy.where(all_idx == False)[0]
-                    ts           = numpy.take(local_peaktimes, inds_t[to_keep])
-                    good         = (ts >= local_bounds[0]) & (ts < local_bounds[1])
-
-                    # We reduce to only the good times that will be kept
-                    #to_keep      = to_keep[good]
-                    #ts           = ts[good]
-                    
-                    if len(ts) > 0:
-                        if full_gpu:
-                            tmp  = cmt.CUDAMatrix(numpy.ones((len(ts), 1)), copy_on_host=False)
-                            tmp3 = cmt.CUDAMatrix(-ts.reshape((len(ts), 1)), copy_on_host=False)
-                            tmp  = tmp.dot(tmp_gpu)
-                            tmp.add_col_vec(tmp3)
-                            condition = cmt.empty(tmp.shape)
-                            cmt.abs(tmp, condition).less_than(temp_2_shift + 1)
-                            condition = condition.asarray().astype(numpy.bool)
-                            tmp       = tmp.asarray().astype(numpy.int32)
-                        else:
-                            tmp      = numpy.dot(numpy.ones((len(ts), 1), dtype=numpy.int32), local_peaktimes.reshape((1, n_t)))
-                            tmp     -= ts.reshape((len(ts), 1))
-                            condition = numpy.abs(tmp) <= temp_2_shift
-
-                        for count, keep in enumerate(to_keep):
-                            
-                            idx_b    = numpy.compress(condition[count, :], all_indices)
-                            ytmp     = tmp[count, condition[count, :]] + temp_2_shift
-                            
-                            indices  = numpy.zeros((S_over, len(ytmp)), dtype=numpy.float32)
-                            indices[ytmp, numpy.arange(len(ytmp))] = 1
-
-                            if full_gpu: 
-                                indices  = cmt.CUDAMatrix(indices, copy_on_host=False)
-                                if patch_gpu:
-                                    b_lines  = b.get_col_slice(0, b.shape[0])
-                                else:
-                                    b_lines  = b.get_col_slice(idx_b[0], idx_b[-1]+1)
-
-                                tmp1 = cmt.sparse_dot(c_overs[inds_temp[keep]], indices, mult=-best_amp[keep])
-                                tmp2 = cmt.sparse_dot(c_overs[inds_temp[keep] + n_tm], indices, mult=-best_amp2[keep])
-                                b_lines.add(tmp1.add(tmp2))
-                                del tmp1, tmp2
+                        data         = local_peaktimes - peak_time_step
+                        is_neighbor  = np.where(np.abs(data) <= temp_2_shift)[0]
+                        idx_neighbor = data[is_neighbor] + temp_2_shift
+                        nb_neighbors = len(is_neighbor)
+                        indices      = np.zeros((S_over, nb_neighbors), dtype=np.int32)
+                        indices[idx_neighbor, np.arange(nb_neighbors)] = 1
+                        
+                        if full_gpu: 
+                            indices  = cmt.CUDAMatrix(indices, copy_on_host=False)
+                            if patch_gpu:
+                                 b_lines  = b.get_col_slice(0, b.shape[0])
                             else:
-                                tmp1   = c_overs[inds_temp[keep]].multiply(-best_amp[keep]).dot(indices)
-                                tmp2   = c_overs[inds_temp[keep] + n_tm].multiply(-best_amp2[keep]).dot(indices)
-                                b[:, idx_b] += tmp1 + tmp2
-
-                            if good[count]:
-
-                                t_spike               = ts[count] + local_offset
-                                result['spiketimes'] += [t_spike]
-                                result['amplitudes'] += [(best_amp_n[keep], best_amp2_n[keep])]
-                                result['templates']  += [inds_temp[keep]]
-
-                    myslice           = numpy.take(inds_t, to_reject)
-                    failure[myslice] += 1
-                    sub_idx           = (numpy.take(failure, myslice) >= nb_chances)
-                    
-                    mask[:, numpy.compress(sub_idx, myslice)] = 0
+                                 b_lines  = b.get_col_slice(is_neighbor[0], is_neighbor[-1]+1)
+ 
+                            tmp1 = cmt.sparse_dot(c_overs[best_template_index], indices, mult=-best_amp[keep])
+                            tmp2 = cmt.sparse_dot(c_overs[best_template2_index], indices, mult=-best_amp2[keep])
+                            b_lines.add(tmp1.add(tmp2))
+                            del tmp1, tmp2
+                        else:
+                            tmp1 = c_overs[best_template_index].multiply(-best_amp)
+                            tmp2 = c_overs[best_template2_index].multiply(-best_amp2)
+                            b[:, is_neighbor] += (tmp1 + tmp2).dot(indices)
+                        # Add matching to the result.
+                        t_spike               = all_spikes[peak_index]
+                        result['spiketimes'] += [t_spike]
+                        result['amplitudes'] += [(best_amp_n, best_amp2_n)]
+                        result['templates']  += [best_template_index]
+                        # Mark current matching as tried.
+                        mask[best_template_index, peak_index] = 0
+                    else:
+                        # Reject the matching.
+                        # Update failure counter of the peak.
+                        failure[peak_index] += 1
+                        # If the maximal number of failures is reached then mark peak as solved (i.e. not fitted).
+                        if failure[peak_index] == nb_chances:
+                            mask[:, peak_index] = 0
+                        else:
+                            mask[best_template_index, peak_index] = 0
 
 
             spikes_to_write     = numpy.array(result['spiketimes'], dtype=numpy.uint32)

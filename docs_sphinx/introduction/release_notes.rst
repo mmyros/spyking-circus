@@ -1,10 +1,10 @@
 Release notes
 =============
 
-Spyking CIRCUS 0.5
+Spyking CIRCUS 0.6
 ------------------
 
-This is the 0.5 release of the SpyKING CIRCUS, a new approach to the problem of spike sorting. The code is based on a smart clustering with
+This is the 0.6 release of the SpyKING CIRCUS, a new approach to the problem of spike sorting. The code is based on a smart clustering with
 sub sampling, and a greedy template matching approach, such that it can resolve the problem of overlapping spikes. The publication about the software 
 is available at http://biorxiv.org/content/early/2016/08/04/067843
 
@@ -31,7 +31,72 @@ Code and documentation contributions (ordered by the number of commits):
 * Cyrille Rossant
 
 =============
-Release 0.5.3
+Release 0.6.1
+=============
+
+* fix for similarities and merged output from the GUIs
+* fix for Python 3 and HDF5
+* fix for Python 3 and launcher GUI
+* fix for maxlag in the merging GUI
+* optimization in the merging GUI for pairs suggestion
+* addition of an auto_mode for meta merging, to suppress manual curation
+* various fixes in the docs
+
+=============
+Release 0.6.0
+=============
+
+* fix an IMPORTANT BUG in the similarities exported for phy/MATLAB, affect the suggestions in the GUI
+* improvements in the neuralynx wrapper
+* add the possibility to exclude some portions of the recordings from the analysis (see documentation)
+* fix a small bug in MS-MPI (Windows only) when shared memory is activated and emtpy arrays are present
+
+=============
+Release 0.5.9
+=============
+
+* The validating step can now accept custom spikes as inputs
+* Change the default frequency for filtering to 300Hz instead of 500Hz
+
+=============
+Release 0.5.8
+=============
+
+* fix a bug for int indices in some file wrappers (python 3.xx) (thanks to Ben Acland)
+* fix a bug in the preview gui to write threshold
+* fix a bug for some paths in Windows (thanks to Albert Miklos)
+* add a wrapper for NeuraLynx (.ncs) file format
+* fix a bug in the installation of the MATLAB GUI
+* fix a bug to see results in MATLAB GUI with only 1 channel
+* fix a bug to convert data to phy with only positive peaks
+* add builds for python 3.6
+* optimizations in file wrappers
+* fix a bug for MCS headers in multifiles, if not all with same sizes
+* add the possibility (with a flag) to turn off parallel HDF5 if needed
+* fix a bug with latest version of HDF5, related to flush issues during clustering
+
+=============
+Release 0.5.7
+=============
+
+* Change the strsplit name in the MATLAB GUI
+* Fix a bug in the numpy wrapper
+* Fix a bug in the artefact removal (numpy 1.12), thanks to Chris Wilson
+* Fixes in the matlab GUI to ease a refitting procedure, thanks to Chris Wilson
+* Overlaps are recomputed if size of templates has changed (for refitting)
+* Addition of a "second" argument for a better control of the preview mode
+* Fix when using the phy GUI and the multi-file mode.
+* Add a file wrapper for INTAN (RHD) file format
+
+=============
+Release 0.5.6
+=============
+
+* Fix in the smart_search when only few spikes are found
+* Fix a bug in density estimation when only few spikes are found
+
+=============
+Release 0.5.5
 =============
 
 * Improvement in the smart_select option given various datasets

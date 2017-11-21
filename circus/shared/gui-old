@@ -3,29 +3,37 @@ from __future__ import division
 import six, h5py, pkg_resources, logging
 
 import numpy as np
+
+try:
+    from PyQt5 import uic
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QCursor
+    from PyQt5.QtWidgets import QMainWindow
+    from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+except ImportError:
+    from matplotlib.backends.backend_qt4agg import NavigationToolbar2QT as NavigationToolbar
+    from matplotlib.backends import qt_compat
+    use_pyside = qt_compat.QT_API == qt_compat.QT_API_PYSIDE
+    if use_pyside:
+        from PySide import uic
+        from PySide.QtCore import Qt
+        from PySide.QtGui import QCursor, QMainWindow
+    else:
+        from PyQt4 import uic
+        from PyQt4.QtCore import Qt
+        from PyQt4.QtGui import QCursor, QMainWindow
+
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.widgets as widgets
 from matplotlib.colors import colorConverter
-import matplotlib.gridspec as gridspec
-import matplotlib.colors as colors
-from matplotlib.backends.backend_qt4agg import NavigationToolbar2QT as NavigationToolbar
-from matplotlib.backends import qt_compat
-use_pyside = qt_compat.QT_API == qt_compat.QT_API_PYSIDE
-if use_pyside:
-    from PySide import QtGui, QtCore, uic
-    from PySide.QtCore import Qt
-    from PySide.QtGui import QApplication, QCursor
-else:
-    from PyQt4 import QtGui, QtCore, uic
-    from PyQt4.QtCore import Qt
-    from PyQt4.QtGui import QApplication, QCursor
 
 from utils import *
 from algorithms import slice_templates, slice_clusters
 from mpi import SHARED_MEMORY, comm
 from circus.shared.probes import get_nodes_and_edges
 from circus.shared.messages import print_and_log
+from circus.shared.utils import apply_patch_for_similarities
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +111,7 @@ class SymmetricVCursor(widgets.AxesWidget):
         return False
 
 
-class MergeWindow(QtGui.QMainWindow):
+class MergeWindow(QMainWindow):
 
     def __init__(self, params, app, extension_in='', extension_out='-merged'):
 
@@ -112,6 +120,9 @@ class MergeWindow(QtGui.QMainWindow):
 
         if comm.rank == 0:
             print_and_log(["Loading GUI with %d CPUs..." %comm.size], 'default', logger)
+
+        apply_patch_for_similarities(params, extension_in)
+
         self.app           = app
         self.params        = params
         self.ext_in        = extension_in
@@ -125,11 +136,20 @@ class MergeWindow(QtGui.QMainWindow):
         self.file_out_suff = params.get('data', 'file_out_suff')
         self.cc_overlap = params.getfloat('merging', 'cc_overlap')
         self.cc_bin     = params.getfloat('merging', 'cc_bin')
+        self.auto_mode  = params.getfloat('merging', 'auto_mode')
 
         self.bin_size   = int(self.cc_bin * self.sampling_rate * 1e-3)
         self.max_delay  = 1 #mmy default 50
 
         self.result     = io.load_data(params, 'results', self.ext_in)
+
+        self.last_spike = 0
+        for spikes in self.result['spiketimes'].values():
+            if len(spikes) > 0:
+                self.last_spike = max(self.last_spike, spikes.max())
+
+        self.nb_bins    = int(self.last_spike/(self.cc_bin*self.sampling_rate*1e-3))
+
         self.overlap    = h5py.File(self.file_out_suff + '.templates%s.hdf5' %self.ext_in, libver='latest').get('maxoverlap')[:]
         try:
             self.lag    = h5py.File(self.file_out_suff + '.templates%s.hdf5' %self.ext_in, libver='latest').get('maxlag')[:]
@@ -217,7 +237,10 @@ class MergeWindow(QtGui.QMainWindow):
                                               color='black')
         self.line_lag2 = self.data_ax.axvline(self.data_ax.get_ybound()[0],
                                               color='black')
-        self.update_lag(5)
+
+        self.suggest_value = self.get_suggest_value.value()
+
+        self.update_lag(2)
         self.plot_data()
         self.plot_scores()
         #
@@ -234,8 +257,9 @@ class MergeWindow(QtGui.QMainWindow):
         self.ui.btn_select.clicked.connect(self.add_to_selection)
         self.ui.btn_unselect.clicked.connect(self.remove_selection)
         self.ui.btn_delete.clicked.connect(self.remove_templates)
-        self.ui.btn_suggest_templates.clicked.connect(self.suggest_pairs)
-        self.ui.btn_suggest_pairs.clicked.connect(self.suggest_templates)
+        self.ui.btn_suggest_templates.clicked.connect(self.suggest_templates)
+        self.ui.btn_suggest_pairs.clicked.connect(self.suggest_pairs)
+        self.ui.get_suggest_value.valueChanged.connect(self.update_suggest_value)
         self.ui.btn_unselect_template.clicked.connect(self.remove_selection_templates)
 
         self.ui.cmb_sorting.currentIndexChanged.connect(self.update_data_sort_order)
@@ -255,6 +279,23 @@ class MergeWindow(QtGui.QMainWindow):
         idx = np.argmax(self.score_y)
         self.update_inspect({idx})
 
+        if self.auto_mode > 0:
+            print_and_log(['Automatic merging with a threshold of %g' %self.auto_mode], 'info', logger)
+            self.suggest_value = self.auto_mode
+            perform_merges = True
+
+            while perform_merges:
+
+                self.suggest_pairs(None)
+                self.add_to_selection(None)
+
+                if len(self.selected_points) == 0:
+                    perform_merges = False
+                else:
+                    self.do_merge(None)
+
+            self.finalize(None)
+
     def listen(self):
 
         while self.mpi_wait[0] == 0:
@@ -264,6 +305,12 @@ class MergeWindow(QtGui.QMainWindow):
             self.finalize(None)
         elif self.mpi_wait[0] == 2:
             sys.exit(0)
+
+    def update_suggest_value(self):
+        self.suggest_value = self.get_suggest_value.value()
+        self.decision_boundary.set_xdata([0, self.score_z.max()])
+        self.decision_boundary.set_ydata([-self.suggest_value, self.score_z.max() - self.suggest_value])
+        self.ui.score_3.draw_idle()
 
     def closeEvent(self, event):
         if comm.rank == 0:
@@ -296,15 +343,20 @@ class MergeWindow(QtGui.QMainWindow):
 
             size    = 2*max_delay+1
             x_cc    = numpy.zeros(size, dtype=numpy.float32)
-            y_cc    = numpy.copy(x_cc)
+            control = 0
+
             if (len(spike_1) > 0) and (len(spike_2) > 0):
+
                 t1b     = numpy.unique(numpy.round(spike_1/self.bin_size))
                 t2b     = numpy.unique(numpy.round(spike_2/self.bin_size))
-                t2b_inv = t2b[-1] + t2b[0] - t2b
+
                 for d in xrange(size):
                     x_cc[d] += len(numpy.intersect1d(t1b, t2b + d - max_delay, assume_unique=True))
-                    y_cc[d] += len(numpy.intersect1d(t1b, t2b_inv + d - max_delay, assume_unique=True))
-            return x_cc, y_cc
+
+                x_cc /= self.nb_bins
+                control = len(spike_1)*len(spike_2)/float((self.nb_bins**2))
+
+            return x_cc, control
 
         self.raw_lags    = numpy.linspace(-self.max_delay*self.cc_bin, self.max_delay*self.cc_bin, 2*self.max_delay+1)
 
@@ -323,7 +375,7 @@ class MergeWindow(QtGui.QMainWindow):
         n_size           = 2*self.max_delay + 1
 
         self.raw_data    = numpy.zeros((0, n_size), dtype=numpy.float32)
-        self.raw_control = numpy.zeros((0, n_size), dtype=numpy.float32)
+        self.raw_control = numpy.zeros(0, dtype=numpy.float32)
         self.pairs       = numpy.zeros((0, 2), dtype=numpy.int32)
 
         to_explore       = xrange(comm.rank, len(self.to_consider), comm.size)
@@ -331,6 +383,8 @@ class MergeWindow(QtGui.QMainWindow):
         if comm.rank == 0:
             print_and_log(['Updating the data...'], 'default', logger)
             to_explore = get_tqdm_progressbar(to_explore)
+            self.ui.label_nb_templates.setText("# templates: %d" %len(self.to_consider))
+
 
         for count, temp_id1 in enumerate(to_explore):
 
@@ -343,25 +397,24 @@ class MergeWindow(QtGui.QMainWindow):
                     spikes1 = self.result['spiketimes']['temp_' + str(temp_id1)].astype('int64')
                     spikes2 = self.result['spiketimes']['temp_' + str(temp_id2)].copy().astype('int64')
                     if self.correct_lag:
-                        spikes2 -= self.lag[temp_id1, temp_id2]
+                        spikes2 += self.lag[temp_id1, temp_id2]
                     a, b    = reversed_corr(spikes1, spikes2, self.max_delay)
                     self.raw_data    = numpy.vstack((self.raw_data, a))
-                    self.raw_control = numpy.vstack((self.raw_control, b))
+                    self.raw_control = numpy.concatenate((self.raw_control, numpy.array([b], dtype=numpy.float32)))
                     self.pairs       = numpy.vstack((self.pairs, numpy.array([temp_id1, temp_id2], dtype=numpy.int32)))
 
         self.pairs       = gather_array(self.pairs, comm, 0, 1, dtype='int32')
-        self.raw_control = gather_array(self.raw_control, comm, 0, 1)
+        self.raw_control = gather_array(self.raw_control, comm)
         self.raw_data    = gather_array(self.raw_data, comm, 0, 1)
         self.sort_idcs   = numpy.arange(len(self.pairs))
         comm.Barrier()
 
     def calc_scores(self, lag):
         data    = self.raw_data[:, abs(self.raw_lags) <= lag]
-        control = self.raw_control[:, abs(self.raw_lags) <= lag]
-        norm_factor = (control.mean(1) + data.mean(1) + 1.)[:, np.newaxis]
+        control = self.raw_control
         score  = self.overlap[self.pairs[:, 0], self.pairs[:, 1]]
-        score2 = ((control - data)/norm_factor).mean(axis=1)
-        score3 = (control/(1. + control.mean(1))[:, np.newaxis]).mean(axis=1)
+        score2 = control - data.mean(axis=1)
+        score3 = control
         return score, score2, score3
 
     def plot_scores(self):
@@ -376,6 +429,7 @@ class MergeWindow(QtGui.QMainWindow):
                 self.collections.append(ax.scatter(x, y,
                                                    facecolor=['black' for _ in x]))
             self.score_ax3.plot([0, 1], [0, 1], 'k--', alpha=0.5)
+            self.decision_boundary = self.score_ax3.plot([0, self.score_z.max()], [-self.suggest_value, self.score_z.max()-self.suggest_value], 'r--', alpha=0.5)[0]
             self.score_ax1.set_ylabel('Normalized CC metric')
             self.score_ax1.set_xlabel('Template similarity')
             self.score_ax2.set_xlabel('Template Norm')
@@ -416,7 +470,7 @@ class MergeWindow(QtGui.QMainWindow):
 
     def plot_data(self):
         # Right: raw data
-        all_raw_data = self.raw_data/(1 + self.raw_data.mean(1)[:, np.newaxis])
+        all_raw_data = self.raw_data
         cmax         = 0.5*all_raw_data.max()
         cmin         = 0.5*all_raw_data.min()
         self.update_sort_idcs()
@@ -446,7 +500,7 @@ class MergeWindow(QtGui.QMainWindow):
     def data_tooltip(self, x, y):
         row = int(y)
         if row >= 0 and row < len(self.raw_data):
-            all_raw_data = self.raw_data/(1 + self.raw_data.mean(axis=1)[:, np.newaxis])
+            all_raw_data = self.raw_data
             data_idx     = self.sort_idcs[row]
             lag_diff     = np.abs(x - self.raw_lags)
             nearest_lag_idx = np.argmin(lag_diff)
@@ -582,15 +636,15 @@ class MergeWindow(QtGui.QMainWindow):
     def update_detail_plot(self):
         self.detail_ax.clear()
         indices = self.inspect_points
-        all_raw_data    = self.raw_data/(1 + self.raw_data.mean(1)[:, np.newaxis])
-        all_raw_control = self.raw_control/(1 + self.raw_control.mean(1)[:, np.newaxis])
+        all_raw_data    = self.raw_data
+        all_raw_control = self.raw_control.ravel()
 
         for count, idx in enumerate(indices):
             data_line, = self.detail_ax.plot(self.raw_lags,
                                              all_raw_data[idx, :].T, lw=2, color=self.inspect_colors[count])
-            self.detail_ax.plot(self.raw_lags, all_raw_control[idx, :].T, ':',
+            self.detail_ax.plot(self.raw_lags, all_raw_control[idx]*numpy.ones(all_raw_data.shape[1]), ':',
                                 color=self.inspect_colors[count], lw=2)
-        self.detail_ax.set_ylim(0, 3)
+        #self.detail_ax.set_ylim(0, 3)
         self.detail_ax.set_xticks(self.data_ax.get_xticks())
         self.detail_ax.set_xticklabels([])
         self.ui.detail.draw_idle()
@@ -783,14 +837,14 @@ class MergeWindow(QtGui.QMainWindow):
         self.inspect_templates = set()
         self.update_inspect_template(self.inspect_templates, add_or_remove='remove')
 
-    def suggest_templates(self, event):
-        self.inspect_points = set()
-        indices  = numpy.where(self.score_x >= 0.9)[0]
-        mad      = numpy.median(numpy.abs(self.score_y[indices] - numpy.median(self.score_y[indices])))
-        nindices = numpy.where(self.score_y[indices] >= 2*mad)[0]
-        self.update_inspect(indices[nindices], add_or_remove='add')
-
     def suggest_pairs(self, event):
+        self.inspect_points = set()
+        indices  = numpy.where(self.score_y > numpy.maximum(0, self.score_z-self.suggest_value))[0]
+        self.app.setOverrideCursor(QCursor(Qt.WaitCursor))
+        self.update_inspect(indices, add_or_remove='add')
+        self.app.restoreOverrideCursor()
+
+    def suggest_templates(self, event):
         self.inspect_templates = set()
         indices = numpy.where(self.norms[self.to_consider] <= 1)[0]
         self.update_inspect_template(indices, add_or_remove='add')
@@ -887,6 +941,7 @@ class MergeWindow(QtGui.QMainWindow):
         print_and_log(['Deleting templates: %s' %str(sorted(self.inspect_templates))], 'default', logger)
         self.app.setOverrideCursor(QCursor(Qt.WaitCursor))
 
+<<<<<<< HEAD
         self.to_delete = numpy.concatenate((self.to_delete, self.to_consider[self.inspect_templates]))
 
         self.generate_data()
@@ -905,12 +960,31 @@ class MergeWindow(QtGui.QMainWindow):
         self.update_waveforms()
         self.plot_scores()
         # do lengthy process
+=======
+        if len(self.inspect_templates) > 0:
+            self.to_delete = numpy.concatenate((self.to_delete, self.to_consider[self.inspect_templates]))
+            self.generate_data()
+            self.collections        = None
+            self.selected_points    = set()
+            self.selected_templates = set()
+            self.inspect_points     = set()
+            self.inspect_templates  = set()
+            self.score_ax1.clear()
+            self.score_ax2.clear()
+            self.score_ax3.clear()
+            self.update_lag(self.use_lag)
+            self.update_data_sort_order()
+            self.update_detail_plot()
+            self.update_waveforms()
+            self.plot_scores()
+            # do lengthy process
+>>>>>>> upstream/master
         self.app.restoreOverrideCursor()
 
 
     def do_merge(self, event, regenerate=True):
         # This simply removes the data points for now
-        print_and_log(['Data indices to merge: %s' %str(sorted(self.selected_points))], 'default', logger)
+        print_and_log(['Data indices to merge: %s' %str(sorted(self.selected_points))], 'debug', logger)
 
         self.app.setOverrideCursor(QCursor(Qt.WaitCursor))
 
@@ -1023,6 +1097,7 @@ class MergeWindow(QtGui.QMainWindow):
             mydata.close()
 
             mydata  = h5py.File(self.file_out_suff + '.templates%s.hdf5' %self.ext_out, 'r+', libver='latest')
+            version     = mydata.create_dataset('version', data=numpy.array([circus.__version__.encode('ascii', 'ignore')]))
             maxoverlaps = mydata.create_dataset('maxoverlap', shape=(len(to_keep), len(to_keep)), dtype=numpy.float32)
             maxlag      = mydata.create_dataset('maxlag', shape=(len(to_keep), len(to_keep)), dtype=numpy.int32)
             for c, i in enumerate(to_keep):
@@ -1040,7 +1115,7 @@ class MergeWindow(QtGui.QMainWindow):
         self.finalize(event)
 
 
-class PreviewGUI(QtGui.QMainWindow):
+class PreviewGUI(QMainWindow):
 
     def __init__(self, params, show_fit=False):
         super(PreviewGUI, self).__init__()
@@ -1089,6 +1164,7 @@ class PreviewGUI(QtGui.QMainWindow):
                 self.result    = io.load_data(self.params, 'results')
             except Exception:
                 print_and_log(["No results found!"], 'info', logger)
+                self.show_fit = False
 
             try:
                 if self.params.getboolean('fitting', 'collect_all'):
@@ -1172,7 +1248,7 @@ class PreviewGUI(QtGui.QMainWindow):
 
 
     def write_threshold(self):
-        self.params.write('detection', 'spike_thresh', '%g' %self.get_threshold.value())
+        self.params.write('detection', 'spike_thresh', '%g' %self.get_threshold.value(), preview_path=True)
 
     def get_data(self):
         self.chunk_size = int(self.sampling_rate*(self.t_stop - self.t_start))

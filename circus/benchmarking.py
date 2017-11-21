@@ -57,7 +57,7 @@ def main(params, nb_cpu, nb_gpu, use_gpu, file_name, benchmark, sim_same_elec):
 
     # Retrieve some key parameters.
     templates = io.load_data(params, 'templates')
-    N_tm = templates.shape[1] / 2
+    N_tm = templates.shape[1] // 2
     trends          = None
 
     # Normalize some variables.
@@ -128,8 +128,6 @@ def main(params, nb_cpu, nb_gpu, use_gpu, file_name, benchmark, sim_same_elec):
 
     # Retrieve some additional key parameters.
     data_file        = params.get_data_file(source=True)
-    import copy
-    tmp_params       = copy.deepcopy(data_file_in._params)
     N_e              = params.getint('data', 'N_e')
     N_total          = params.nb_channels
     nodes, edges     = get_nodes_and_edges(params)
@@ -170,7 +168,6 @@ def main(params, nb_cpu, nb_gpu, use_gpu, file_name, benchmark, sim_same_elec):
 
     data_file_out = params.get_data_file(is_empty=True)
     data_file_out.allocate(shape=data_file.shape)
-    data_file_in._params = tmp_params
 
     # Synchronize all the threads/processes.
     comm.Barrier()
@@ -246,7 +243,7 @@ def main(params, nb_cpu, nb_gpu, use_gpu, file_name, benchmark, sim_same_elec):
         ## Insert the selected template.
         
         # Retrieve the number of existing templates in the dataset.
-        N_tm           = templates.shape[1] / 2
+        N_tm           = templates.shape[1]//2
 
         # Generate the template of the synthesized cell from the selected
         # template, the target amplitude and the rescaling (i.e. threshold of

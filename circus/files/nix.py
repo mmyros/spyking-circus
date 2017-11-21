@@ -1,5 +1,5 @@
 import h5py, numpy, re, sys
-from hdf5 import H5File
+from .hdf5 import H5File
 
 class NixFile(H5File):
 
@@ -16,8 +16,8 @@ class NixFile(H5File):
 
     def _read_from_header(self):
 
-        nix_name = 'data/%s/data_arrays/%s' %(self._params['block'], self._params['data_array'])
-        self._params['h5_key']  = '%s/data' %nix_name
+        nix_name = 'data/%s/data_arrays/%s' %(self.params['block'], self.params['data_array'])
+        self.params['h5_key']  = '%s/data' %nix_name
 
         self.__check_valid_key__(self.h5_key)
         self._open()

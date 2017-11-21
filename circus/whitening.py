@@ -267,6 +267,19 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
     if sign_peaks == 'both':
        max_elts_elec *= 2
     nb_elts          = int(params.getfloat('whitening', 'nb_elts')*N_e*max_elts_elec)
+
+    ignore_dead_times = params.getboolean('triggers', 'ignore_times')
+    if ignore_dead_times:
+        dead_times = numpy.loadtxt(params.get('triggers', 'dead_file'))
+        if len(dead_times.shape) == 1:
+            dead_times = dead_times.reshape(1, 2)
+        dead_in_ms = params.getboolean('triggers', 'dead_in_ms')
+        if dead_in_ms:
+            dead_times *= numpy.int64(data_file.sampling_rate*1e-3)
+        dead_times = dead_times.astype(numpy.int64)
+        all_dead_times = []
+        for i in xrange(len(dead_times)):
+            all_dead_times += range(dead_times[i, 0], dead_times[i, 1])
     #################################################################
 
 
@@ -358,6 +371,10 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
 
             local_peaktimes = numpy.unique(all_peaktimes)
 
+            if ignore_dead_times:
+                 local_peaktimes = numpy.array(list(set(local_peaktimes + t_offset).difference(all_dead_times)), dtype=numpy.int32) - t_offset
+                 local_peaktimes = numpy.sort(local_peaktimes)
+
             if len(local_peaktimes) > 0:
 
                 diff_times      = local_peaktimes[-1]-local_peaktimes[0]
@@ -396,12 +413,14 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
 
                         if groups[elec] < upper_bounds:
 
-                            if negative_peak:
-                                elts_neg[:, elt_count_neg] = local_chunk[peak - template_shift:peak + template_shift + 1, elec]
-                            else:
-                                elts_pos[:, elt_count_pos] = local_chunk[peak - template_shift:peak + template_shift + 1, elec]
-                            if alignment:
-                                ydata    = local_chunk[peak-2*template_shift:peak+2*template_shift+1, elec]
+                            if not alignment:
+                                if negative_peak:
+                                    elts_neg[:, elt_count_neg] = local_chunk[peak - template_shift:peak + template_shift + 1, elec]
+                                else:
+                                    elts_pos[:, elt_count_pos] = local_chunk[peak - template_shift:peak + template_shift + 1, elec]
+
+                            elif alignment:
+                                ydata    = local_chunk[peak - 2*template_shift:peak + 2*template_shift + 1, elec]
                                 f        = scipy.interpolate.UnivariateSpline(xdata, ydata, s=0)
                                 if negative_peak:
                                     rmin = (numpy.argmin(f(cdata)) - len(cdata)/2.)/5.
@@ -456,7 +475,7 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
                 res_pca         = pca.fit_transform(gdata_pos.astype(numpy.double)).astype(numpy.float32)
                 res['proj_pos'] = pca.components_.T.astype(numpy.float32)
             else:
-                res['proj_pos'] = numpy.identity(output_dim, dtype=numpy.float32)
+                res['proj_pos'] = numpy.identity(int(output_dim), dtype=numpy.float32)
             res['rec_pos']       = res['proj_pos'].T
             res['waveform_pos']  = numpy.median(gdata_pos, 0)
             idx                  = numpy.random.permutation(numpy.arange(gdata_pos.shape[0]))[:1000]

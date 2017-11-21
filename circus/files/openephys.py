@@ -1,5 +1,5 @@
 import h5py, numpy, re, sys, os
-from datafile import DataFile
+from .datafile import DataFile
 import xml.etree.ElementTree as ET
 
 def atoi(text):
@@ -44,14 +44,12 @@ class OpenEphysFile(DataFile):
 
     def _read_header_(self, file):
         header = { }
-        f = open(file, 'rb')
-        h = f.read(self.NUM_HEADER_BYTES).replace('\n','').replace('header.','')
-        for i,item in enumerate(h.split(';')):
-            if '=' in item:
-                header[item.split(' = ')[0]] = item.split(' = ')[1]
-        f.close()
+        with open(file, 'rb') as f:
+            h = f.read(self.NUM_HEADER_BYTES-1).decode("latin-1").replace('\n','').replace('header.','')
+            for i,item in enumerate(h.split(';')):
+                if '=' in item:
+                    header[item.split(' = ')[0]] = item.split(' = ')[1]
         return header
-
 
     def _read_from_header(self):
 
@@ -74,7 +72,6 @@ class OpenEphysFile(DataFile):
 
 
     def _get_slice_(self, t_start, t_stop):
-
         x_beg = numpy.int64(t_start // self.SAMPLES_PER_RECORD)
         r_beg = numpy.mod(t_start, self.SAMPLES_PER_RECORD)
         x_end = numpy.int64(t_stop // self.SAMPLES_PER_RECORD)
@@ -84,17 +81,17 @@ class OpenEphysFile(DataFile):
 
         if x_beg == x_end:
             g_offset = x_beg * self.SAMPLES_PER_RECORD + self.OFFSET_PER_BLOCK[0]*(x_beg + 1) + self.OFFSET_PER_BLOCK[1]*x_beg
-            data_slice = numpy.arange(g_offset + r_beg, g_offset + r_end)
+            data_slice = numpy.arange(g_offset + r_beg, g_offset + r_end, dtype=numpy.int64)
         else:
-            for count, nb_blocks in enumerate(numpy.arange(x_beg, x_end + 1)):
+            for count, nb_blocks in enumerate(numpy.arange(x_beg, x_end + 1, dtype=numpy.int64)):
                 g_offset = nb_blocks * self.SAMPLES_PER_RECORD + self.OFFSET_PER_BLOCK[0]*(nb_blocks + 1) + self.OFFSET_PER_BLOCK[1]*nb_blocks
                 if count == 0:
-                    data_slice += numpy.arange(g_offset + r_beg, g_offset + self.SAMPLES_PER_RECORD).tolist()
+                    data_slice += numpy.arange(g_offset + r_beg, g_offset + self.SAMPLES_PER_RECORD, dtype=numpy.int64).tolist()
                 elif (count == (x_end - x_beg)):
-                    data_slice += numpy.arange(g_offset, g_offset + r_end).tolist()
+                    data_slice += numpy.arange(g_offset, g_offset + r_end, dtype=numpy.int64).tolist()
                 else:
-                    data_slice += numpy.arange(g_offset, g_offset + self.SAMPLES_PER_RECORD).tolist()
-        return data_slice 
+                    data_slice += numpy.arange(g_offset, g_offset + self.SAMPLES_PER_RECORD, dtype=numpy.int64).tolist()
+        return data_slice
 
 
     def read_chunk(self, idx, chunk_size, padding=(0, 0), nodes=None):
@@ -125,10 +122,11 @@ class OpenEphysFile(DataFile):
             t_stop  = self.duration
 
         data_slice  = self._get_slice_(t_start, t_stop) 
-        
+        data        = self._unscale_data_from_float32(data)
+
         self._open(mode='r+')
         for i in xrange(self.nb_channels):
-            self.data[i][data_slice] = self._unscale_data_from_from32(data)[:, i]
+            self.data[i][data_slice] = data[:, i]
         self._close()
 
     def _open(self, mode='r'):

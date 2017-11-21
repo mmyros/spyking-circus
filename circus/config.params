@@ -9,6 +9,7 @@ mapping        = ~/probes/mea_252.prb  # Mapping of the electrode (see http://sp
 suffix         =                       # Suffix to add to generated files
 global_tmp     = True                  # should be False if local /tmp/ has enough space (better for clusters)
 overwrite      = True                  # Filter or remove artefacts on site (if write access is possible). Data are duplicated otherwise
+parallel_hdf5  = True                  # Use the parallel HDF5 feature (if available)
 
 [detection]
 radius         = auto       # Radius [in um] (if auto, read from the prb file)
@@ -20,15 +21,18 @@ matched_thresh = 5          # Threshold for detection if matched filter is True
 alignment      = True       # Realign the waveforms by oversampling
 
 [filtering]
-cut_off        = 500, auto  # Min and Max (auto=nyquist) cut off frequencies for the band pass butterworth filter [Hz]
+cut_off        = 300, auto  # Min and Max (auto=nyquist) cut off frequencies for the band pass butterworth filter [Hz]
 filter         = True       # If True, then a low-pass filtering is performed
 remove_median  = False      # If True, median over all channels is substracted to each channels (movement artifacts)
 
 [triggers]
-trig_file      =            # External stimuli to be considered as putative artefacts [in trig units] (see documentation) 
+trig_file      =            # External stimuli to be considered as putative artefacts [in trig units] (see documentation)
 trig_windows   =            # The time windows of those external stimuli [in trig units]
-trig_unit      = ms         # The unit in which times are expressed: can be either ms or timestep
+trig_unit      = ms         # The unit in which times are expressed: can be ms or timestep
 clean_artefact = False      # If True, external artefacts induced by triggers will be suppressed from data
+dead_file      =            # Portion of the signals that should be excluded from the analysis [in dead units]
+dead_unit      = ms         # The unit in which times for dead regions are expressed: can be ms or timestep
+ignore_times   = False      # If True, any spike in the dead regions will be ignored by the analysis
 make_plots     =            # Generate sanity plots of the averaged artefacts [Nothing or None if no plots]
 
 [whitening]
@@ -36,7 +40,7 @@ chunk_size     = 30         # Size of the data chunks [in s]
 safety_time    = 1          # Temporal zone around which templates are isolated [in ms, or auto]
 temporal       = False      # Perform temporal whitening
 spatial        = True       # Perform spatial whitening
-max_elts       = 10000      # Max number of events per electrode (should be compatible with nb_elts)
+max_elts       = 1000       # Max number of events per electrode (should be compatible with nb_elts)
 nb_elts        = 0.8        # Fraction of max_elts that should be obtained per electrode [0-1]
 output_dim     = 5          # Can be in percent of variance explain, or num of dimensions for PCA on waveforms
 
@@ -63,13 +67,14 @@ chunk_size     = 1          # Size of chunks used during fitting [in second]
 gpu_only       = False      # Use GPU for computation of b's AND fitting [not optimized yet]
 amp_limits     = (0.3, 5)   # Amplitudes for the templates during spike detection [if not auto]
 amp_auto       = True       # True if amplitudes are adjusted automatically for every templates
-max_chunk      = inf        # Fit only up to max_chunk   
+max_chunk      = inf        # Fit only up to max_chunk
 collect_all    = False      # If True, one garbage template per electrode is created, to store unfitted spikes
 
 [merging]
-cc_overlap     = 0.5        # Only templates with CC higher than cc_overlap may be merged
+cc_overlap     = 0.7        # Only templates with CC higher than cc_overlap may be merged
 cc_bin         = 2          # Bin size for computing CC [in ms]
 correct_lag    = True       # If spikes are aligned when merging. May be better for phy usage
+auto_mode      = 0          # If >0, merging will be automatic (see doc, 0.1 is a good value) [0-1]
 
 [converting]
 erase_all      = True       # If False, a prompt will ask you to export if export has already been done
@@ -87,6 +92,8 @@ radius_factor  = 0.5        # Radius factor to modulate physical radius during v
 juxta_dtype    = uint16     # Type of the juxtacellular data
 juxta_thresh   = 6          # Threshold for juxtacellular detection
 juxta_valley   = False      # True if juxta-cellular spikes are negative peaks
+juxta_spikes   =            # If none, spikes are automatically detected based on juxta_thresh
+filter         = True       # If the juxta channel need to be filtered or not
 make_plots     = png        # Generate sanity plots of the validation [Nothing or None if no plots]
 
 [extracting]

@@ -1,5 +1,5 @@
 import h5py, numpy, re, sys
-from hdf5 import H5File
+from .hdf5 import H5File
 
 class BRWFile(H5File):
 
@@ -14,7 +14,7 @@ class BRWFile(H5File):
 
         header = {}
 
-        self._params['h5_key']  = '3BData/Raw'
+        self.params['h5_key']  = '3BData/Raw'
         header['h5_key']        = self.h5_key
 
 
@@ -62,7 +62,7 @@ class BRWFile(H5File):
 
     def write_chunk(self, time, data):
 
-        data = self._unscale_data_from_from32(data)
+        data = self._unscale_data_from_float32(data)
         data = data.ravel()
         self.data[self.nb_channels*time:self.nb_channels*time+len(data)] = data
         

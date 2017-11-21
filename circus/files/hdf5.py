@@ -1,6 +1,6 @@
 import h5py, numpy, re, sys, logging
 from circus.shared.messages import print_and_log
-from datafile import DataFile, comm
+from .datafile import DataFile, comm
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ class H5File(DataFile):
 
     def write_chunk(self, time, data):
 
-        data = self._unscale_data_from_from32(data)
+        data = self._unscale_data_from_float32(data)
         
         if self.time_axis == 0:
             self.data[time:time+data.shape[0], :] = data
@@ -115,4 +115,4 @@ class H5File(DataFile):
 
     @property
     def h5_key(self):
-        return self._params['h5_key']
+        return self.params['h5_key']

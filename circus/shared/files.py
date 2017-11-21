@@ -10,8 +10,8 @@ from mpi import all_gather_array, gather_array, SHARED_MEMORY, comm
 from mpi4py import MPI
 from circus.shared.probes import get_nodes_and_edges
 from circus.shared.messages import print_and_log
-from circus.shared.utils import purge
-
+from circus.shared.utils import purge, get_parallel_hdf5_flag
+import circus
 logger = logging.getLogger(__name__)
 
 
@@ -321,9 +321,12 @@ def load_data_memshared(params, data, extension='', normalize=False, transpose=F
             nb_templates = h5py.File(file_out_suff + '.templates%s.hdf5' %extension, 'r', libver='latest').get('norms').shape[0]
 
             if sub_comm.rank == 0:
-                temp_x       = h5py.File(file_out_suff + '.templates%s.hdf5' %extension, 'r', libver='latest').get('temp_x')[:]
-                temp_y       = h5py.File(file_out_suff + '.templates%s.hdf5' %extension, 'r', libver='latest').get('temp_y')[:]
-                temp_data    = h5py.File(file_out_suff + '.templates%s.hdf5' %extension, 'r', libver='latest').get('temp_data')[:]
+                temp_x       = h5py.File(file_out_suff + '.templates%s.hdf5' %extension,
+                                         'r', libver='latest').get('temp_x')[:].ravel()
+                temp_y       = h5py.File(file_out_suff + '.templates%s.hdf5' %extension,
+                                         'r', libver='latest').get('temp_y')[:].ravel()
+                temp_data    = h5py.File(file_out_suff + '.templates%s.hdf5' %extension,
+                                         'r', libver='latest').get('temp_data')[:].ravel()
                 sparse_mat = scipy.sparse.csc_matrix((temp_data, (temp_x, temp_y)), shape=(N_e*N_t, nb_templates))
                 if normalize:
                     norm_templates = load_data(params, 'norm-templates')
@@ -383,7 +386,6 @@ def load_data_memshared(params, data, extension='', normalize=False, transpose=F
             templates.indptr  = indptr
 
             sub_comm.Free()
-
             return templates
         else:
             raise Exception('No templates found! Check suffix?')
@@ -496,18 +498,24 @@ def load_data_memshared(params, data, extension='', normalize=False, transpose=F
 
                     type_size  = numpy.int64(sub_comm.bcast(numpy.array([type_size], dtype=numpy.int32), root=0)[0])
 
-                    win_data    = MPI.Win.Allocate_shared(data_bytes, 4, comm=sub_comm)
-                    buf_data, _ = win_data.Shared_query(0)
+                    empty      = numpy.int64(sub_comm.bcast(numpy.array([data_bytes], dtype=numpy.int32), root=0)[0])
+                    if empty > 0:
+                        win_data    = MPI.Win.Allocate_shared(data_bytes, 4, comm=sub_comm)
+                        buf_data, _ = win_data.Shared_query(0)
 
-                    buf_data    = numpy.array(buf_data, dtype='B', copy=False)
+                        buf_data    = numpy.array(buf_data, dtype='B', copy=False)
+                        if type_size == 0:
+                            data = numpy.ndarray(buffer=buf_data, dtype=numpy.int32, shape=(data_size,))
+                        elif type_size == 1:
+                            data = numpy.ndarray(buffer=buf_data, dtype=numpy.float32, shape=(data_size,))
 
-                    if type_size == 0:
-                        data = numpy.ndarray(buffer=buf_data, dtype=numpy.int32, shape=(data_size,))
-                    elif type_size == 1:
-                        data = numpy.ndarray(buffer=buf_data, dtype=numpy.float32, shape=(data_size,))
-
-                    if sub_comm.rank == 0:
-                        data[:]    = locdata
+                        if sub_comm.rank == 0:
+                            data[:]    = locdata
+                    else:
+                        if type_size == 0:
+                            data = numpy.zeros(0, dtype=numpy.int32)
+                        elif type_size == 1:
+                            data = numpy.zeros(0, dtype=numpy.float32)
 
                     sub_comm.Barrier()
 
@@ -558,16 +566,18 @@ def load_data(params, data, extension=''):
             myfile.close()
             return matched_thresh * thresholds
     elif data == 'spatial_whitening':
-        if os.path.exists(file_out_suff + '.basis.hdf5'):
-            myfile  = h5py.File(file_out_suff + '.basis.hdf5', 'r', libver='latest')
+        filename = file_out_suff + '.basis.hdf5'
+        if os.path.exists(filename):
+            myfile  = h5py.File(filename, 'r', libver='latest')
             spatial = numpy.ascontiguousarray(myfile.get('spatial')[:])
             myfile.close()
             return spatial
         else:
             raise Exception('Whitening matrix has to be computed first!')
     elif data == 'temporal_whitening':
-        if os.path.exists(file_out_suff + '.basis.hdf5'):
-            myfile   = h5py.File(file_out_suff + '.basis.hdf5', 'r', libver='latest')
+        filename = file_out_suff + '.basis.hdf5'
+        if os.path.exists(filename):
+            myfile   = h5py.File(filename, 'r', libver='latest')
             temporal = myfile.get('temporal')[:]
             myfile.close()
             return temporal
@@ -606,32 +616,64 @@ def load_data(params, data, extension=''):
         myfile.close()
         return waveforms
     elif data == 'templates':
-        if os.path.exists(file_out_suff + '.templates%s.hdf5' %extension):
-            temp_x = h5py.File(file_out_suff + '.templates%s.hdf5' %extension, 'r', libver='latest').get('temp_x')[:]
-            temp_y = h5py.File(file_out_suff + '.templates%s.hdf5' %extension, 'r', libver='latest').get('temp_y')[:]
-            temp_data = h5py.File(file_out_suff + '.templates%s.hdf5' %extension, 'r', libver='latest').get('temp_data')[:]
-            N_e, N_t, nb_templates = h5py.File(file_out_suff + '.templates%s.hdf5' %extension, 'r', libver='latest').get('temp_shape')[:]
+        filename = file_out_suff + '.templates%s.hdf5' %extension
+        if os.path.exists(filename):
+            myfile = h5py.File(filename, 'r', libver='latest')
+            temp_x = myfile.get('temp_x')[:].ravel()
+            temp_y = myfile.get('temp_y')[:].ravel()
+            temp_data = myfile.get('temp_data')[:].ravel()
+            N_e, N_t, nb_templates = myfile.get('temp_shape')[:].ravel()
+            myfile.close()
             return scipy.sparse.csc_matrix((temp_data, (temp_x, temp_y)), shape=(N_e*N_t, nb_templates))
+        else:
+            raise Exception('No templates found! Check suffix?')
+    elif data == 'overlaps':
+        filename = file_out_suff + '.overlap%s.hdf5' %extension
+        if os.path.exists(filename):
+            myfile = h5py.File(filename, 'r', libver='latest')
+            over_x = myfile.get('over_x')[:].ravel()
+            over_y = myfile.get('over_y')[:].ravel()
+            over_data = myfile.get('over_data')[:].ravel()
+            over_shape = myfile.get('over_shape')[:].ravel()
+            myfile.close()
+            return scipy.sparse.csc_matrix((over_data, (over_x, over_y)), shape=over_shape)
+        else:
+            raise Exception('No overlaps found! Check suffix?')
+    elif data == 'version':
+        filename = file_out_suff + '.templates%s.hdf5' %extension
+        if os.path.exists(filename):
+            try:
+                myfile  = h5py.File(filename, 'r', libver='latest')
+                version = myfile.get('version')[:]
+                myfile.close()
+            except Exception:
+                version = None
+            return version
         else:
             raise Exception('No templates found! Check suffix?')
     elif data == 'norm-templates':
         if os.path.exists(file_out_suff + '.templates%s.hdf5' %extension):
-            return h5py.File(file_out_suff + '.templates%s.hdf5' %extension, 'r', libver='latest').get('norms')[:]
+            myfile = h5py.File(file_out_suff + '.templates%s.hdf5' %extension, 'r', libver='latest')
+            norms  = myfile.get('norms')[:]
+            myfile.close()
+            return norms
         else:
             raise Exception('No templates found! Check suffix?')
     elif data == 'spike-cluster':
-        file_name = params.get('data', 'data_file_noext') + '.spike-cluster.hdf5'
-        if os.path.exists(file_name):
-            data       = h5py.File(file_name, 'r')
-            clusters   = data.get('clusters').ravel()
+        filename = params.get('data', 'data_file_noext') + '.spike-cluster.hdf5'
+        if os.path.exists(filename):
+            myfile     = h5py.File(filename, 'r', libver='latest')
+            clusters   = myfile.get('clusters')[:].ravel()
             N_clusters = len(numpy.unique(clusters))
-            spiketimes = data.get('spikes').ravel()
+            spiketimes = myfile.get('spikes')[:].ravel()
+            myfile.close()
             return clusters, spiketimes, N_clusters
         else:
             raise Exception('Need to provide a spike-cluster file!')
     elif data == 'clusters':
-        if os.path.exists(file_out_suff + '.clusters%s.hdf5' %extension):
-            myfile = h5py.File(file_out_suff + '.clusters%s.hdf5' %extension, 'r', libver='latest')
+        filename = file_out_suff + '.clusters%s.hdf5' %extension
+        if os.path.exists(filename):
+            myfile = h5py.File(filename, 'r', libver='latest')
             result = {}
             for key in myfile.keys():
                 result[str(key)] = myfile.get(key)[:]
@@ -640,8 +682,9 @@ def load_data(params, data, extension=''):
         else:
             raise Exception('No clusters found! Check suffix or run clustering?')
     elif data == 'clusters-light':
-        if os.path.exists(file_out_suff + '.clusters%s.hdf5' %extension):
-            myfile = h5py.File(file_out_suff + '.clusters%s.hdf5' %extension, 'r', libver='latest')
+        filename = file_out_suff + '.clusters%s.hdf5' %extension
+        if os.path.exists(filename):
+            myfile = h5py.File(filename, 'r', libver='latest')
             result = {}
             for key in myfile.keys():
                 if ('clusters_' in key) or (key == 'electrodes'):
@@ -651,8 +694,9 @@ def load_data(params, data, extension=''):
         else:
             raise Exception('No clusters found! Check suffix or run clustering?')
     elif data == 'electrodes':
-        if os.path.exists(file_out_suff + '.clusters%s.hdf5' %extension):
-            myfile     = h5py.File(file_out_suff + '.clusters%s.hdf5' %extension, 'r', libver='latest')
+        filename = file_out_suff + '.clusters%s.hdf5' %extension
+        if os.path.exists(filename):
+            myfile     = h5py.File(filename, 'r', libver='latest')
             electrodes = myfile.get('electrodes')[:]
             myfile.close()
             return electrodes
@@ -674,8 +718,9 @@ def load_data(params, data, extension=''):
         except Exception:
             raise Exception('No overlaps found! Check suffix or run the fitting?')
     elif data == 'limits':
-        if os.path.exists(file_out_suff + '.templates%s.hdf5' %extension):
-            myfile = h5py.File(file_out_suff + '.templates%s.hdf5' %extension, 'r', libver='latest')
+        myfile = file_out_suff + '.templates%s.hdf5' %extension
+        if os.path.exists(myfile):
+            myfile = h5py.File(myfile, 'r', libver='latest')
             limits = myfile.get('limits')[:]
             myfile.close()
             return limits
@@ -834,8 +879,8 @@ def load_data(params, data, extension=''):
     elif data in ['false-positive-rates', 'true-positive-rates',
                   'false-positive-error-rates', 'false-negative-error-rates']:
         # Retrieve saved data.
-        confusion_matrices = load_data(params, 'confusion-matrices')
-        threshold_false_negatives = load_data(params, 'threshold-false-negatives')
+        confusion_matrices = load_data(params, 'confusion-matrices', extension)
+        threshold_false_negatives = load_data(params, 'threshold-false-negatives', extension)
         # Correct counts of false negatives.
         for confusion_matrix in confusion_matrices:
             confusion_matrix[0, 1] += threshold_false_negatives
@@ -875,8 +920,8 @@ def load_data(params, data, extension=''):
             raise Exception('No contingency matrices found! Check suffix or check if file `{}` exists?'.format(filename))
     elif data in ['sc-false-positive-error-rates', 'sc-false-negative-error-rates']:
         # Retrieve saved data.
-        sc_contingency_matrices = load_data(params, 'sc-contingency-matrices')
-        threshold_false_negatives = load_data(params, 'threshold-false-negatives')
+        sc_contingency_matrices = load_data(params, 'sc-contingency-matrices', extension)
+        threshold_false_negatives = load_data(params, 'threshold-false-negatives', extension)
         # Correct counts of false negatives.
         for sc_contingency_matrix in sc_contingency_matrices:
             sc_contingency_matrix[0, 1] += threshold_false_negatives
@@ -903,8 +948,8 @@ def load_data(params, data, extension=''):
         else:
             raise Exception('No contingency matrix found! Check suffix or check if file `{}` exists?'.format(filename))
     elif data in ['sc-best-false-positive-error-rate', 'sc-best-false-negative-error-rate']:
-        sc_contingency_matrix = load_data(params, 'sc-contingency-matrix')
-        threshold_false_negatives = load_data(params, 'threshold-false-negatives')
+        sc_contingency_matrix = load_data(params, 'sc-contingency-matrix', extension)
+        threshold_false_negatives = load_data(params, 'threshold-false-negatives', extension)
         # Correct count of false negatives.
         sc_contingency_matrix[0, 1] += threshold_false_negatives
         # Compute the wanted statistics.
@@ -1125,10 +1170,10 @@ def get_garbage(params, extension=''):
     myfile.close()
     return result
 
+
 def get_overlaps(params, extension='', erase=False, normalize=True, maxoverlap=True, verbose=True, half=False, use_gpu=False, nb_cpu=1, nb_gpu=0):
 
-    import h5py
-    parallel_hdf5  = h5py.get_config().mpi
+    parallel_hdf5  = get_parallel_hdf5_flag(params)
     data_file      = params.data_file
     N_e            = params.getint('data', 'N_e')
     N_t            = params.getint('detection', 'N_t')
@@ -1194,15 +1239,9 @@ def get_overlaps(params, extension='', erase=False, normalize=True, maxoverlap=T
 
     all_delays      = numpy.arange(1, N_t+1)
 
-    local_templates = numpy.zeros(0, dtype=numpy.int32)
-    for ielec in range(comm.rank, N_e, comm.size):
-        local_templates = numpy.concatenate((local_templates, numpy.where(best_elec == ielec)[0]))
-
     if half:
-        nb_total     = len(local_templates)
         upper_bounds = N_tm
     else:
-        nb_total     = 2*len(local_templates)
         upper_bounds = N_tm//2
 
     to_explore = xrange(comm.rank, N_e, comm.size)
@@ -1210,7 +1249,6 @@ def get_overlaps(params, extension='', erase=False, normalize=True, maxoverlap=T
     if comm.rank == 0:
         if verbose:
             print_and_log(["Pre-computing the overlaps of templates %s" %cuda_string], 'default', logger)
-        N_0  = len(range(comm.rank, N_e, comm.size))
         to_explore = get_tqdm_progressbar(to_explore)
 
 
@@ -1219,7 +1257,7 @@ def get_overlaps(params, extension='', erase=False, normalize=True, maxoverlap=T
     over_data = numpy.zeros(0, dtype=numpy.float32)
     rows      = numpy.arange(N_e*N_t)
 
-    for count, ielec in enumerate(to_explore):
+    for ielec in to_explore:
 
         local_idx = numpy.where(best_elec == ielec)[0]
         len_local = len(local_idx)
@@ -1287,25 +1325,33 @@ def get_overlaps(params, extension='', erase=False, normalize=True, maxoverlap=T
 
         if maxoverlap:
 
-            overlap    = scipy.sparse.csr_matrix((over_data, (over_x, over_y)), shape=(N_tm**2, 2*N_t - 1))
-            myfile     = h5py.File(filename, 'r+', libver='latest')
-            myfile2    = h5py.File(file_out_suff + '.templates%s.hdf5' %extension, 'r+', libver='latest')
-            if 'maxoverlap' in myfile2.keys():
-                maxoverlap = myfile2.get('maxoverlap')
-            else:
-                maxoverlap = myfile2.create_dataset('maxoverlap', shape=(N_tm, N_tm), dtype=numpy.float32)
-            if 'maxlag' in myfile2.keys():
-                maxlag = myfile2.get('maxlag')
-            else:
-                maxlag = myfile2.create_dataset('maxlag', shape=(N_tm, N_tm), dtype=numpy.int32)
+            assert (half == False), "Error"
 
-            for i in xrange(N_tm-1):
-                data                = overlap[i*N_tm+i+1:(i+1)*N_tm].toarray()
+            overlap    = scipy.sparse.csr_matrix((over_data, (over_x, over_y)), shape=(N_tm**2, 2*N_t - 1))
+
+            myfile2    = h5py.File(file_out_suff + '.templates%s.hdf5' %extension, 'r+', libver='latest')
+
+            if 'maxoverlap' in myfile2.keys():
+                maxoverlap = myfile2['maxoverlap']
+            else:
+                maxoverlap = myfile2.create_dataset('maxoverlap', shape=(N_tm//2, N_tm//2), dtype=numpy.float32)
+
+            if 'maxlag' in myfile2.keys():
+                maxlag = myfile2['maxlag']
+            else:
+                maxlag = myfile2.create_dataset('maxlag', shape=(N_tm//2, N_tm//2), dtype=numpy.int32)
+
+            if 'version' in myfile2.keys():
+                version = myfile2['version']
+            else:
+                version = myfile2.create_dataset('version', data=numpy.array([circus.__version__.encode('ascii', 'ignore')]))
+
+            for i in xrange(N_tm//2 - 1):
+                data                = overlap[i*N_tm+i+1:i*N_tm+N_tm//2].toarray()
                 maxlag[i, i+1:]     = N_t - numpy.argmax(data, 1)
-                maxlag[i+1:, i]     = maxlag[i, i+1:]
+                maxlag[i+1:, i]     = -maxlag[i, i+1:]
                 maxoverlap[i, i+1:] = numpy.max(data, 1)
                 maxoverlap[i+1:, i] = maxoverlap[i, i+1:]
-            myfile.close()
             myfile2.close()
 
     comm.Barrier()

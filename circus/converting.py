@@ -9,7 +9,7 @@ import h5py
 from circus.shared.probes import get_nodes_and_edges
 from colorama import Fore
 from circus.shared.messages import print_and_log, init_logging
-from circus.shared.utils import query_yes_no
+from circus.shared.utils import query_yes_no, apply_patch_for_similarities
 
 def main(params, nb_cpu, nb_gpu, use_gpu, extension):
 
@@ -28,7 +28,7 @@ def main(params, nb_cpu, nb_gpu, use_gpu, extension):
     if export_all and not params.getboolean('fitting', 'collect_all'):
         if comm.rank == 0:
             print_and_log(['Export unfitted spikes only if [fitting] collect_all is True'], 'error', logger)
-        sys.exit(1)
+        sys.exit(0)
 
     def generate_mapping(probe):
         p         = {}
@@ -134,6 +134,7 @@ def main(params, nb_cpu, nb_gpu, use_gpu, extension):
         labels          = numpy.load(os.path.join(output_path, 'spike_templates.npy'))
         max_loc_channel = get_max_loc_channel(params)
         nb_features     = params.getint('whitening', 'output_dim')
+        sign_peaks      = params.get('detection', 'peaks')
         nodes, edges    = get_nodes_and_edges(params)
         N_total         = params.getint('data', 'N_total')
         templates       = io.load_data(params, 'templates', extension)
@@ -155,7 +156,10 @@ def main(params, nb_cpu, nb_gpu, use_gpu, extension):
             nb_loc                = len(edges[nodes[elec]])
             pc_features_ind[count, numpy.arange(nb_loc)] = inv_nodes[edges[nodes[elec]]]
 
-        basis_proj, basis_rec = io.load_data(params, 'basis')
+        if sign_peaks in ['negative', 'both']:
+            basis_proj, basis_rec = io.load_data(params, 'basis')
+        elif sign_peaks in ['positive']:
+            basis_proj, basis_rec = io.load_data(params, 'basis-pos')
 
         to_process = numpy.arange(comm.rank, nb_templates, comm.size)
 
@@ -257,7 +261,12 @@ def main(params, nb_cpu, nb_gpu, use_gpu, extension):
             write_results(output_path, params, extension) 
  
             N_tm = write_templates(output_path, params, extension)
-            similarities = h5py.File(file_out_suff + '.templates%s.hdf5' %extension, 'r+', libver='latest').get('maxoverlap')
+
+            apply_patch_for_similarities(params, extension)
+
+            template_file = h5py.File(file_out_suff + '.templates%s.hdf5' %extension, 'r', libver='latest')
+            similarities  = template_file.get('maxoverlap')[:]
+            template_file.close()
             norm = N_e*N_t
 
             if export_all:
