@@ -260,6 +260,52 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
                         local_chunk = local_chunk.dot(spatial_whitening).asarray()
                     else:
                         local_chunk = numpy.dot(local_chunk, spatial_whitening)
+                #%% print "removing too-close to each other spikes from all channels"
+                def detect_spikey(local_chunk,thr=50,plotose=0):
+                    from scipy.interpolate import interp1d
+                    nchan=local_chunk.shape[1]
+                    all_peaktimes=[];
+                    for ich in tqdm.trange(nchan):# THIS IS TOO SLOW
+                        all_peaktimes.extend(algo.detect_peaks(np.abs(local_chunk[:, ich]), thr, valley=False, mpd=10,show=False))
+                        
+                    def histc(X, bins):
+                        map_to_bins = np.digitize(X,bins)
+                        r = np.zeros(bins.shape)
+                        for iii in map_to_bins:
+                            r[iii-1] += 1
+                        return [r, map_to_bins]
+                    #            buf=np.random.gamma(1,3,[1000,64]) #test data
+                    all_peaktimes=np.sort(all_peaktimes)
+                    R,_=histc(all_peaktimes,np.arange(min(all_peaktimes),max(all_peaktimes),30000))
+                    is_spikey=R> (nchan*60) # 20 spikes per second on every channel is too much
+                    if plotose:
+                        _ = algo.detect_peaks(np.abs(local_chunk[:, -2]), thr, valley=False, mpd=10,show=True)
+                        plt.show()
+                        plt.plot(all_peaktimes,'.');plt.title('all chan over time');plt.show();plt.close()
+                        plt.plot(np.diff(all_peaktimes),'.');plt.title('all chan diff');plt.show();plt.close()
+                        #%
+                        plt.plot(R,'.');plt.title('Raster all chan over time');plt.show();plt.close()
+                        plt.plot(R/nchan,'-');plt.title('all chan spikes per chan per sec');plt.show();plt.close()
+                        plt.plot(is_spikey,'.');plt.title('is_spiky');plt.show();plt.close()
+                    f=interp1d(range(len(is_spikey)),is_spikey)
+                    is_spikey1=np.round(f(np.linspace(0,len(is_spikey)-1,local_chunk.shape[0])))
+                    local_chunk[is_spikey1==1]=np.nan
+                    return is_spikey1,local_chunk
+                if matched_filter:
+                    is_bad,local_chunk=detect_spikey(local_chunk,thr=matched_tresholds_pos[i],plotose=0)                
+                else:
+                    is_bad,local_chunk=detect_spikey(local_chunk,thr=thresholds,plotose=0)                
+                                
+                #                #%% print "removing too-close to each other spikes from all channels"
+                #                ind=all_peaktimes 
+                #                idel = numpy.zeros(ind.size, dtype=numpy.bool)
+                #                for i in range(ind.size):
+                #                    if not idel[i]:
+                #                        # keep peaks with the same height if kpsh is True
+                #                        idel = idel | (ind >= ind[i] - mpd) & (ind <= ind[i] + mpd) \
+                #                            & (x[ind[i]] > x[ind] if kpsh else True)
+                #                        idel[i] = 0  # Keep current peak
+                        
                 if do_temporal_whitening:
                     local_chunk = scipy.ndimage.filters.convolve1d(local_chunk, temporal_whitening, axis=0, mode='constant')
                 #print "Extracting the peaks..."
@@ -292,8 +338,8 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
                             peaktimes = algo.detect_peaks(numpy.abs(local_chunk[:, i]), thresholds[i], valley=False, mpd=dist_peaks)
                         all_peaktimes = numpy.concatenate((all_peaktimes, peaktimes))
                         all_extremas  = numpy.concatenate((all_extremas, i*numpy.ones(len(peaktimes), dtype=numpy.int32)))
-                        
-                print_and_log(["\nAnalyzing chunk" +str(gcount) +"/"+ str(len(all_chunks))," found "+str(len(peaktimes))+" peaks and "+str(int(len(peaktimes)/N_total))+" peaks per channel and "+str(len(peaktimes)/N_total/chunk_size)+" peaks per channel per chunk with size"+str(chunk_size)], 'default', logger)                #print "Removing the useless borders..."
+                
+                #print "Removing the useless borders..."
                 if alignment:
                     local_borders = (2*template_shift, local_shape - 2*template_shift)
                 else:
