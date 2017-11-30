@@ -14,7 +14,7 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
     #################################################################
     data_file      = params.data_file
     N_e            = params.getint('data', 'N_e')
-    N_t            = params.getint('detecton', 'N_t')
+    N_t            = params.getint('detection', 'N_t')
     N_total        = params.nb_channels
     template_shift = params.getint('detection', 'template_shift')
     chunk_size     = params.getint('data', 'chunk_size')
@@ -117,7 +117,7 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
                 argmax_peak     = numpy.random.permutation(numpy.arange(n_times))
                 clusters_id     = local_clusters[argmax_peak]
                 local_peaktimes = local_peaktimes[argmax_peak]
-
+                print_and_log(["Analyzing chunk", gidx, "/", nb_chunks, " found ",len(local_peaktimes)," peaks and ",int(len(local_peaktimes)/N_total)," peaks per channel and ",int(len(local_peaktimes)/N_total/chunk_size)," peaks per channel per chunk"], 'default', logger)
                 #print "Selection of the peaks with spatio-temporal masks..."
                 for idx in xrange(len(local_peaktimes)):
 

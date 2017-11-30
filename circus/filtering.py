@@ -367,14 +367,14 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
         data_file_out = params.get_data_file(is_empty=True, params=description)
 
         data_file_out.allocate(shape=data_file_in.shape)
-<<<<<<< HEAD
+#<<<<<<< HEAD
         data_file_in._params = tmp_params
         if data_file_in.is_stream:
             for source in data_file_in._sources:
                 source._params = tmp_params
-=======
+#=======
 
->>>>>>> upstream/master
+#>>>>>>> upstream/master
 
     if clean_artefact:
         if not (os.path.exists(params.get('triggers', 'trig_file')) and os.path.exists(params.get('triggers', 'trig_windows'))):

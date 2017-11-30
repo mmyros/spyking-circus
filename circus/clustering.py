@@ -292,8 +292,8 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
                             peaktimes = algo.detect_peaks(numpy.abs(local_chunk[:, i]), thresholds[i], valley=False, mpd=dist_peaks)
                         all_peaktimes = numpy.concatenate((all_peaktimes, peaktimes))
                         all_extremas  = numpy.concatenate((all_extremas, i*numpy.ones(len(peaktimes), dtype=numpy.int32)))
-
-                #print "Removing the useless borders..."
+                        
+                print_and_log(["\nAnalyzing chunk" +str(gcount) +"/"+ str(len(all_chunks))," found "+str(len(peaktimes))+" peaks and "+str(int(len(peaktimes)/N_total))+" peaks per channel and "+str(len(peaktimes)/N_total/chunk_size)+" peaks per channel per chunk with size"+str(chunk_size)], 'default', logger)                #print "Removing the useless borders..."
                 if alignment:
                     local_borders = (2*template_shift, local_shape - 2*template_shift)
                 else:
