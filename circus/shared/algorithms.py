@@ -590,6 +590,14 @@ def detect_peaks(x, mph=None, mpd=1, threshold=0, edge='rising', kpsh=False, val
     # remove peaks < minimum peak height
     if ind.size and mph is not None:
         ind = ind[x[ind] >= mph]
+    # remove the short peaks - mmyros
+    idel = numpy.zeros(ind.size, dtype=numpy.bool)
+    for i in range(3,ind.size-3):
+        if edge=='rising':
+            idel[i] =  (x[ind[i]+1]>=mph) & (x[ind[i]+2]>=mph) & (x[ind[i]+3]>=mph)#mmyros
+        elif edge=='falling':
+            idel[i] =  (x[ind[i]-1]>=mph) & (x[ind[i]-2]>=mph)#mmyros
+            ind = ind[~idel] #mmyros
     # remove peaks - neighbors < threshold
     if ind.size and threshold > 0:
         dx = numpy.min(numpy.vstack([x[ind]-x[ind-1], x[ind]-x[ind+1]]), axis=0)

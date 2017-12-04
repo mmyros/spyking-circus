@@ -73,6 +73,8 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
 
         #print "Node", comm.rank, "is analyzing chunk", gidx,  "/", nb_chunks, " ..."
         local_chunk, t_offset = data_file.get_data(gidx, chunk_size, nodes=nodes)
+        # mmyros: since I set stuff to zero frequently, let's discard zeros for whitening
+        local_chunk=local_chunk[np.all(local_chunk!=0,axis=1),:] #mmyros
         local_shape = len(local_chunk)
 
         #print "Node", comm.rank, "computes the median absolute deviations in a random chunk"

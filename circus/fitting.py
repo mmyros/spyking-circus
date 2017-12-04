@@ -225,7 +225,47 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
 
         result       = {'spiketimes' : [], 'amplitudes' : [], 'templates' : []}
 
-        local_chunk, t_offset = data_file.get_data(gidx, chunk_size, padding, nodes=nodes)           
+        local_chunk, t_offset = data_file.get_data(gidx, chunk_size, padding, nodes=nodes)
+        #%% print "removing too-close to each other spikes from all channels"
+        def detect_spikey(local_chunk,thr=None,plotose=0):
+            if  (thr is None):        thr=np.repeat(50,local_chunk.shape[0])  
+            from scipy.interpolate import interp1d
+            nchan=local_chunk.shape[1]
+            all_peaktimes=[];
+            for ich in range(nchan):
+                all_peaktimes.extend(algo.detect_peaks(np.abs(local_chunk[:, ich]), thr[ich], valley=False, mpd=10,show=False))
+                
+            def histc(X, bins):
+                map_to_bins = np.digitize(X,bins)
+                r = np.zeros(bins.shape)
+                for iii in map_to_bins:
+                    r[iii-1] += 1
+                return [r, map_to_bins]
+#            buf=np.random.gamma(1,3,[1000,64]) #test data
+            all_peaktimes=np.sort(all_peaktimes)
+            if (len(all_peaktimes)<6)|(local_chunk.shape[0]<90001):
+                return [],local_chunk            
+            R,_=histc(all_peaktimes,np.arange(min(all_peaktimes),max(all_peaktimes),30000))
+            is_spikey=R> (nchan*35) # 20 spikes per second on every channel is too much
+            if (len(is_spikey)<3):                return [],local_chunk            
+            if plotose:
+                _ = algo.detect_peaks(np.abs(local_chunk[:, -2]), thr, valley=False, mpd=10,show=True)
+                plt.show()
+                plt.plot(all_peaktimes,'.');plt.title('all chan over time');plt.show();plt.close()
+                plt.plot(np.diff(all_peaktimes),'.');plt.title('all chan diff');plt.show();plt.close()
+                #%
+                plt.plot(R,'.');plt.title('Raster all chan over time');plt.show();plt.close()
+                plt.plot(R/nchan,'-');plt.title('all chan spikes per chan per sec');plt.show();plt.close()
+                plt.plot(is_spikey,'.');plt.title('is_spiky');plt.show();plt.close()
+            f=interp1d(range(len(is_spikey)),is_spikey)
+            is_spikey1=np.round(f(np.linspace(0,len(is_spikey)-1,local_chunk.shape[0])))
+            local_chunk[is_spikey1==1]=0#np.nan
+            return is_spikey1,local_chunk
+#        if matched_filter:
+#            is_bad,local_chunk=detect_spikey(local_chunk,thr=matched_tresholds_pos[i],plotose=0)
+#        else:
+#            is_bad,local_chunk=detect_spikey(local_chunk,thr=thresholds,plotose=0)                
+                                        
         len_chunk             = len(local_chunk)
 
         if do_spatial_whitening:

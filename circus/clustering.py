@@ -261,13 +261,15 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
                     else:
                         local_chunk = numpy.dot(local_chunk, spatial_whitening)
                 #%% print "removing too-close to each other spikes from all channels"
-                def detect_spikey(local_chunk,thr=50,plotose=0):
+                def detect_spikey(local_chunk,thr=None,plotose=0):
+                    if  (thr is None):        thr=np.repeat(50,local_chunk.shape[0])  
                     from scipy.interpolate import interp1d
                     nchan=local_chunk.shape[1]
                     all_peaktimes=[];
-                    for ich in tqdm.trange(nchan):# THIS IS TOO SLOW
-                        all_peaktimes.extend(algo.detect_peaks(np.abs(local_chunk[:, ich]), thr, valley=False, mpd=10,show=False))
-                        
+                    for ich in range(nchan):
+                        all_peaktimes.extend(algo.detect_peaks(np.abs(local_chunk[:, ich]), thr[ich], valley=False, mpd=10,show=False))
+                    if (len(all_peaktimes)<6)|(local_chunk.shape[0]<90001):
+                        return [],local_chunk
                     def histc(X, bins):
                         map_to_bins = np.digitize(X,bins)
                         r = np.zeros(bins.shape)
@@ -277,7 +279,9 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
                     #            buf=np.random.gamma(1,3,[1000,64]) #test data
                     all_peaktimes=np.sort(all_peaktimes)
                     R,_=histc(all_peaktimes,np.arange(min(all_peaktimes),max(all_peaktimes),30000))
-                    is_spikey=R> (nchan*60) # 20 spikes per second on every channel is too much
+                    is_spikey=R> (nchan*35) # 20 spikes per second on every channel is too much
+                    if (len(is_spikey)<3):                return [],local_chunk            
+            
                     if plotose:
                         _ = algo.detect_peaks(np.abs(local_chunk[:, -2]), thr, valley=False, mpd=10,show=True)
                         plt.show()
@@ -289,13 +293,14 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
                         plt.plot(is_spikey,'.');plt.title('is_spiky');plt.show();plt.close()
                     f=interp1d(range(len(is_spikey)),is_spikey)
                     is_spikey1=np.round(f(np.linspace(0,len(is_spikey)-1,local_chunk.shape[0])))
-                    local_chunk[is_spikey1==1]=np.nan
+                    local_chunk[is_spikey1==1]=0#np.nan
                     return is_spikey1,local_chunk
-                if matched_filter:
-                    is_bad,local_chunk=detect_spikey(local_chunk,thr=matched_tresholds_pos[i],plotose=0)                
-                else:
-                    is_bad,local_chunk=detect_spikey(local_chunk,thr=thresholds,plotose=0)                
-                                
+#                if matched_filter:
+#                    is_bad,local_chunk=detect_spikey(local_chunk,thr=matched_tresholds_pos[i],plotose=0)   #             
+#                else:
+#                    is_bad,local_chunk=detect_spikey(local_chunk,thr=thresholds,plotose=0)                
+                    
+                #%%%
                 #                #%% print "removing too-close to each other spikes from all channels"
                 #                ind=all_peaktimes 
                 #                idel = numpy.zeros(ind.size, dtype=numpy.bool)
@@ -324,6 +329,7 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
                     if sign_peaks in ['negative', 'both']:
                         filter_chunk = scipy.ndimage.filters.convolve1d(local_chunk, waveform_neg, axis=0, mode='constant')
                         for i in xrange(N_e):
+                            
                             peaktimes = algo.detect_peaks(filter_chunk[:, i], matched_tresholds_neg[i], mpd=dist_peaks)
                             all_peaktimes   = numpy.concatenate((all_peaktimes, peaktimes))
                             all_extremas    = numpy.concatenate((all_extremas, i*numpy.ones(len(peaktimes), dtype=numpy.int32)))
